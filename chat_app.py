@@ -2,9 +2,6 @@ import os
 import tempfile
 import datetime
 
-os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
-os.environ["HF_HUB_OFFLINE"] = "1"
-
 import streamlit as st
 from langchain_openai import ChatOpenAI
 from langchain_community.embeddings import HuggingFaceEmbeddings
