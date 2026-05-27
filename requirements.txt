@@ -1,8 +1,9 @@
 streamlit
-langchain-core
+langchain
 langchain-openai
 langchain-community
 langchain-text-splitters
 faiss-cpu
 pypdf
-ddgs
+docx2txt
+duckduckgo-search
