@@ -6,12 +6,15 @@ from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_community.document_loaders import PyPDFLoader, Docx2txtLoader, TextLoader, CSVLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.tools import DuckDuckGoSearchRun
+from langchain.tools.retriever import create_retriever_tool
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 
 st.set_page_config(page_title="我的全能 AI", page_icon="🤖")
-st.title("🤖 满血版手搓 AI 智能体")
+st.title("🤖 满血版手搓 AI 智能体 (Agent 模式)")
 
 # 1. 配置云端词向量模型
 @st.cache_resource
@@ -24,7 +27,7 @@ def get_embeddings_model():
 
 embeddings = get_embeddings_model()
 
-# 2. 配置大语言模型 (加入 streaming 参数支持流式)
+# 2. 配置大语言模型 (确保模型支持 Tool Calling)
 llm = ChatOpenAI(
     temperature=0.5,
     openai_api_base="https://open.bigmodel.cn/api/paas/v4",
@@ -75,7 +78,7 @@ with st.sidebar:
             splits = text_splitter.split_documents(docs)
             
             st.session_state.vectorstore = FAISS.from_documents(splits, embeddings)
-            st.success(f"《{uploaded_file.name}》阅读完毕！")
+            st.success(f"《{uploaded_file.name}》阅读完毕！我已经掌握了它的内容。")
             os.remove(tmp_file_path)
 
 # 历史对话展示
@@ -90,41 +93,55 @@ if prompt := st.chat_input("发号施令吧！"):
         st.markdown(prompt)
 
     with st.chat_message("assistant"):
-        context_text = ""
+        # 动态组装工具箱 (Tools)
+        tools = []
         
-        # 技能 1：从文档里找答案
+        # 技能 1：把本地文档变成一个 Tool
         if st.session_state.vectorstore is not None:
             retriever = st.session_state.vectorstore.as_retriever()
-            docs = retriever.invoke(prompt)
-            context_text += "【来自本地文档的参考资料】：\n" + "\n".join(doc.page_content for doc in docs) + "\n\n"
+            doc_tool = create_retriever_tool(
+                retriever,
+                "document_search",
+                "搜索并读取用户刚刚上传的文档（PDF/Word/TXT/CSV）中的内容。如果用户问关于资料、文档里的问题，优先用这个工具。"
+            )
+            tools.append(doc_tool)
             
-        # 技能 2：去全网找答案
+        # 技能 2：把全网搜索变成一个 Tool
         if web_search_enabled:
-            with st.spinner("🌍 正在全网搜集情报..."):
-                search = DuckDuckGoSearchRun()
-                search_results = search.invoke(prompt)
-                context_text += "【来自全网搜索的最新情报】：\n" + search_results + "\n\n"
+            search_tool = DuckDuckGoSearchRun(
+                name="web_search",
+                description="当你不知道某些实时信息、最新新闻或需要查阅互联网资料时，使用这个工具去全网搜索。"
+            )
+            tools.append(search_tool)
 
-        # 脑力整合与流式输出
-        if context_text != "":
-            template = """你是一个全能数字员工。请参考我为你提供的资料来回答问题。
-            如果资料里没有提到，你可以结合你的常识回答。
+        # 判断是走 Agent 模式还是普通聊天模式
+        if tools:
+            # 准备一个高大上的 UI 容器，用来展示 AI 调用工具的思考过程
+            st_callback = StreamlitCallbackHandler(st.container(), expand_new_thoughts=True)
             
-            参考资料：
-            {context}
+            # Agent 大脑模板
+            agent_prompt = ChatPromptTemplate.from_messages([
+                ("system", "你是一个极度聪明、全能的数字员工。请合理利用手头的工具来解答老板的问题。"),
+                ("human", "{input}"),
+                MessagesPlaceholder(variable_name="agent_scratchpad"),
+            ])
             
-            老板的问题：{question}
-            """
-            final_prompt = ChatPromptTemplate.from_template(template)
+            # 创建智能体
+            agent = create_tool_calling_agent(llm, tools, agent_prompt)
+            agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
             
-            # 使用 LangChain 的管道语法 (LCEL) 和 StrOutputParser
-            chain = final_prompt | llm | StrOutputParser()
+            # 运行 Agent 并把页面回调传进去
+            response = agent_executor.invoke(
+                {"input": prompt},
+                {"callbacks": [st_callback]}
+            )
             
-            # st.write_stream 完美接收数据流，实现打字机效果！
-            response = st.write_stream(chain.stream({"context": context_text, "question": prompt}))
+            final_answer = response["output"]
+            st.markdown(final_answer)
+            st.session_state.messages.append({"role": "assistant", "content": final_answer})
+            
         else:
-            # 啥都没开，直接裸聊的流式输出
+            # 啥工具都没开，纯靠大模型脑力的流式输出
             chain = llm | StrOutputParser()
             response = st.write_stream(chain.stream(prompt))
-            
-        st.session_state.messages.append({"role": "assistant", "content": response})
+            st.session_state.messages.append({"role": "assistant", "content": response})
