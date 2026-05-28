@@ -7,6 +7,8 @@ from datetime import datetime
 import sys
 import io
 import logging
+import re
+import plotly.io as pio  # 用于将图表保存为持久化 JSON 文件
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -25,6 +27,10 @@ logging.basicConfig()
 logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
 
 st.set_page_config(page_title="全能 AI 助手", page_icon="🤖", layout="wide")
+
+# 确保持久化图表的文件夹存在
+if not os.path.exists("saved_charts"):
+    os.makedirs("saved_charts")
 
 def init_db():
     conn = sqlite3.connect('chat_history.db')
@@ -106,7 +112,7 @@ except KeyError as e:
     st.error(f"⚠️ 缺少 API Key: {e}。请检查 Secrets 配置！")
     st.stop()
 
-# 核心大脑：DeepSeek 专属配置（不污染全局环境变量）
+# 核心大脑：DeepSeek
 llm = ChatOpenAI(
     model="deepseek-chat", 
     api_key=st.secrets["DEEPSEEK_API_KEY"], 
@@ -120,23 +126,46 @@ def run_python_code(code: str) -> str:
     """
     运行 Python 代码进行复杂的数据分析、统计计算或绘制动态图表。
     输入必须是一段合法的 Python 脚本。
-    1. 如果有计算结果，务必使用 print() 打印，工具会捕获并返回。
-    2. 如果用户要求画图（如折线图、柱状图、饼图等），必须使用此工具！
-    3. 【非常重要】你的执行环境里已经内置了 st (Streamlit)、pd (pandas) 和 px (plotly.express)。
-       - 请优先使用 px (plotly) 画图。
-       - 画完后必须调用 `st.plotly_chart(fig)` 将图表渲染到前端！
+    1. 画图必须使用 px (plotly.express)。
+    2. 画完后必须调用 `st.plotly_chart(fig)` 进行渲染。
     """
     old_stdout = sys.stdout
     redirected_output = sys.stdout = io.StringIO()
+    
+    # 每次运行工具前，确保存放图表路径的临时列表存在
+    if "temp_chart_paths" not in st.session_state:
+        st.session_state.temp_chart_paths = []
+
+    # 【终极核心】：拦截 st.plotly_chart 的执行，把图片偷偷保存到本地磁盘！
+    class MockSt:
+        def __getattr__(self, name):
+            return getattr(st, name) # 其他 st 函数正常放行
+        
+        def plotly_chart(self, fig, **kwargs):
+            cid = str(uuid.uuid4())
+            cpath = f"saved_charts/{cid}.json"
+            pio.write_json(fig, cpath)  # 把图表对象转为 JSON 存在硬盘
+            st.session_state.temp_chart_paths.append(cpath) # 记录路径
+            st.plotly_chart(fig, **kwargs) # 临时在执行框里显示一下
+
     try:
         global_env = {
-            "st": st, 
+            "st": MockSt(), 
             "pd": __import__('pandas'),
             "px": __import__('plotly.express')
         }
         exec(code, global_env)
+        
+        # 【防呆设计】：如果大模型犯傻，没调用 st.plotly_chart，但生成了 fig 变量，我们直接给它兜底强行保存！
+        if 'fig' in global_env and not st.session_state.temp_chart_paths:
+            fig = global_env['fig']
+            cid = str(uuid.uuid4())
+            cpath = f"saved_charts/{cid}.json"
+            pio.write_json(fig, cpath)
+            st.session_state.temp_chart_paths.append(cpath)
+
         sys.stdout = old_stdout
-        return redirected_output.getvalue() + "\n（代码执行成功，如果有图表已经渲染在了页面上）"
+        return redirected_output.getvalue() + "\n（代码执行成功，图表已生成）"
     except Exception as e:
         sys.stdout = old_stdout
         return f"代码执行出错: {str(e)}"
@@ -175,14 +204,9 @@ with st.sidebar:
         clear_session_messages(st.session_state.current_session_id)
         st.success("当前记忆已清空！")
         st.rerun()
-        
-    current_msgs = get_messages(st.session_state.current_session_id)
-    if len(current_msgs) > 0:
-        chat_text = "\n\n".join([f"{msg['role'].upper()}:\n{msg['content']}" for msg in current_msgs])
-        st.download_button("💾 导出当前聊天记录", data=chat_text, file_name="聊天记录.txt", mime="text/plain", use_container_width=True)
 
 tools = [
-    TavilySearchResults(max_results=3, description="用于搜索互联网上的实时信息，如天气、新闻。如果问题涉及实时数据，必须使用此工具。"),
+    TavilySearchResults(max_results=3, description="用于搜索互联网上的实时信息。"),
     run_python_code
 ]
 
@@ -193,44 +217,33 @@ if uploaded_file is not None:
         st.session_state.current_file_path = tmp_path
 
     if uploaded_file.name.endswith(".csv"):
-        st.success(f"✅ 数据表 {uploaded_file.name} 已加载！(已开启代码直读模式)")
+        st.success(f"✅ 数据表 {uploaded_file.name} 已加载！")
     else:
         with st.spinner("正在启动高级 RAG 引擎解析文件..."):
             if uploaded_file.name.endswith(".pdf"):
                 loader = PyPDFLoader(tmp_path)
             else:
                 loader = TextLoader(tmp_path, encoding="utf-8")
-            
             docs = loader.load()
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
             splits = text_splitter.split_documents(docs)
-            
-            # 向量化工具：继续使用智谱（避免 DeepSeek 缺失 embedding 接口报错）
             embeddings = OpenAIEmbeddings(
                 model="embedding-3",
                 api_key=st.secrets["ZHIPU_API_KEY"],
                 base_url="https://open.bigmodel.cn/api/paas/v4/"
             ) 
             vectorstore = FAISS.from_documents(splits, embeddings)
-            
             base_retriever = vectorstore.as_retriever()
-            advanced_retriever = MultiQueryRetriever.from_llm(
-                retriever=base_retriever, 
-                llm=llm
-            )
-            
-            retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "当你需要回答关于用户上传的文档里的内容时，可以使用此工具搜索。")
+            advanced_retriever = MultiQueryRetriever.from_llm(retriever=base_retriever, llm=llm)
+            retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "用于搜索用户文档的内容。")
             tools.append(retriever_tool)
-            st.success(f"✅ 文件 {uploaded_file.name} 已加载，并已开启多路并发检索！")
+            st.success(f"✅ 文件 {uploaded_file.name} 已加载！")
 
 system_prompt_text = """你是一个企业级全能 AI 助手。
-【极其重要的铁律】：
-只要用户提到“画图”、“柱状图”、“折线图”、“可视化”等词汇，你**绝对不可以**只用文字回答“画好了”。
-你必须、立刻、强制调用 `run_python_code` 工具来执行代码画图！
-画图时，直接使用内置的 px (plotly.express) 并在代码最后一行写 `st.plotly_chart(fig)`。"""
+当用户需要画图时，调用 run_python_code 生成图表，无需废话。"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
-    system_prompt_text += f"\n\n[核心机密] 用户最新上传了本地文件，路径为: '{st.session_state.current_file_path}'。你可以直接在 run_python_code 里写 `df = pd.read_csv('{st.session_state.current_file_path}')` 读取它并画图！"
+    system_prompt_text += f"\n\n[机密] 最新本地文件路径: '{st.session_state.current_file_path}'。如果是表格直接 read_csv 读取。"
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt_text),
@@ -242,13 +255,35 @@ prompt = ChatPromptTemplate.from_messages([
 agent = create_tool_calling_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-st.title("🤖 满血版企业级 AI (高级 RAG + Agent)")
+st.title("🤖 满血版企业级 AI (高级 RAG + 数据分析师)")
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
+# ====================================================
+# 【极其核心的图表渲染区】：遍历历史消息，如果是图表标记，直接渲染原图！
+# ====================================================
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
-        st.markdown(msg["content"])
+        content = msg["content"]
+        if msg["role"] == "assistant":
+            # 用正则抠出隐藏在文本里的图表路径
+            chart_paths = re.findall(r'\[CHART_PATH:(.*?)\]', content)
+            # 删掉这些隐藏标记，不让用户看到丑陋的代码路径
+            clean_content = re.sub(r'\[CHART_PATH:.*?\]', '', content).strip()
+            
+            if clean_content:
+                st.markdown(clean_content)
+                
+            # 依次将存放在硬盘里的 JSON 重新复活成完美的可交互图表！
+            for cpath in chart_paths:
+                if os.path.exists(cpath):
+                    try:
+                        fig = pio.read_json(cpath)
+                        st.plotly_chart(fig, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"图表加载失败: {e}")
+        else:
+            st.markdown(content)
 
 if user_input := st.chat_input("传个文档，或者直接让我画个数据分析图表！"):
     if len(st.session_state.messages) == 0:
@@ -266,13 +301,26 @@ if user_input := st.chat_input("传个文档，或者直接让我画个数据分
 
     with st.chat_message("assistant"):
         st_callback = StreamlitCallbackHandler(st.container())
+        
+        # 每次聊天前，清理临时存储器
+        st.session_state.temp_chart_paths = []
+        
         try:
             response = agent_executor.invoke(
                 {"input": user_input, "chat_history": chat_history},
                 {"callbacks": [st_callback]}
             )
             answer = response["output"]
+            
+            # 【终极闭环】：悄悄把拦截到的图片路径追加到最终回答中，存入数据库！
+            if "temp_chart_paths" in st.session_state and st.session_state.temp_chart_paths:
+                for p in st.session_state.temp_chart_paths:
+                    answer += f"\n[CHART_PATH:{p}]"
+                st.session_state.temp_chart_paths = [] # 归档后清空
+                
             save_message(st.session_state.current_session_id, "assistant", answer)
+            
+            # 触发重新渲染加载图表
             st.rerun()
             
         except Exception as e:
