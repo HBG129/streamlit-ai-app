@@ -32,9 +32,54 @@ st.set_page_config(page_title="极简 AI", page_icon="🤖", layout="wide")
 
 st.markdown("""
 <style>
+    /* 隐藏底部水印 */
     footer {visibility: hidden;}
     
-    /* 工具栏按钮全局圆角与悬浮微动效 */
+    /* 彻底隐藏 Streamlit 原生的顶部菜单栏 (Deploy等)，为我们的固定标题让路 */
+    header[data-testid="stHeader"] {
+        display: none !important;
+    }
+    
+    /* ==========================================
+       【核心修复 1】绝对固定的吸顶标题栏 + 独立颜色区分
+       ========================================== */
+    .custom-fixed-header {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100%;
+        background-color: #f0f2f6; /* 亮色模式下的独立背景色，区分聊天区 */
+        z-index: 999999;
+        text-align: center;
+        padding: 16px 0;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.08); /* 明显的阴影层次感 */
+        border-bottom: 1px solid #e0e0e0;
+    }
+    
+    .custom-fixed-header h3 {
+        margin: 0;
+        color: #31333F;
+        font-size: 1.25rem;
+        font-weight: 600;
+    }
+    
+    /* 适配暗黑模式的标题栏颜色 */
+    @media (prefers-color-scheme: dark) {
+        .custom-fixed-header {
+            background-color: #1a1c24; 
+            border-bottom: 1px solid #2e303e;
+        }
+        .custom-fixed-header h3 {
+            color: #fafafa;
+        }
+    }
+    
+    /* 强行把聊天内容往下推，防止被固定标题挡住 */
+    .block-container {
+        padding-top: 6rem !important;
+    }
+
+    /* 工具栏按钮悬浮动效 */
     .stButton>button {
         border-radius: 10px;
         transition: all 0.2s ease-in-out;
@@ -43,65 +88,6 @@ st.markdown("""
     .stButton>button:hover {
         transform: scale(1.05);
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-    }
-    
-    /* ==========================================
-       【核心修复 1】固定吸顶标题，永远显示在最上方
-       ========================================== */
-    h3#chat-title {
-        position: fixed;
-        top: 2.875rem; /* 悬浮在 Streamlit 默认顶栏的下方 */
-        left: 0;
-        right: 0;
-        margin: 0;
-        padding: 15px 0;
-        background-color: var(--background-color); /* 自动适应白天/黑夜模式 */
-        z-index: 999;
-        text-align: center;
-        border-bottom: 1px solid var(--secondary-background-color);
-        box-shadow: 0 4px 15px rgba(0,0,0,0.05); /* 产生分层质感的阴影 */
-        font-size: 1.3rem;
-        font-weight: bold;
-        color: var(--text-color);
-    }
-    
-    /* 为了防止固定的标题挡住最开始的聊天记录，给主区域顶部强行增加留白 */
-    .block-container {
-        padding-top: 5rem !important;
-    }
-
-    /* ==========================================
-       【核心修复 2 & 3】原生组件右对齐 + 字体颜色修复
-       ========================================== */
-    /* 1. 拦截带有 .user-msg 标记的原生对话框，使其左右反转 */
-    [data-testid="stChatMessage"]:has(.user-msg) {
-        flex-direction: row-reverse;
-    }
-    
-    /* 2. 调整原生头像间距（大小由Streamlit接管，保证和AI完全一致！） */
-    [data-testid="stChatMessage"]:has(.user-msg) [data-testid="stChatMessageAvatarImage"],
-    [data-testid="stChatMessage"]:has(.user-msg) > div:first-child {
-        margin-right: 0 !important;
-        margin-left: 1rem !important;
-    }
-    
-    /* 3. 强制用户发言气泡变成微信蓝，调整圆角 */
-    [data-testid="stChatMessage"]:has(.user-msg) [data-testid="stChatMessageContent"] {
-        background-color: #007AFF !important;
-        border-radius: 15px 4px 15px 15px !important;
-        padding: 10px 16px !important;
-        max-width: 80% !important;
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end; 
-    }
-    
-    /* 4. 【关键】强制用户气泡内的文字永远是白色，防止隐身！ */
-    [data-testid="stChatMessage"]:has(.user-msg) [data-testid="stChatMessageContent"] p,
-    [data-testid="stChatMessage"]:has(.user-msg) [data-testid="stChatMessageContent"] span {
-        color: #FFFFFF !important;
-        text-align: left; 
-        margin-bottom: 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -315,7 +301,7 @@ def upload_file_modal():
             st.rerun()
 
 # ==========================================
-# 极简侧边栏工具条 (仅保留操作和文件提示)
+# 极简侧边栏工具条
 # ==========================================
 with st.sidebar:
     col1, col2, col3, col4 = st.columns(4)
@@ -358,7 +344,7 @@ with st.sidebar:
         st.info(f"📁 **{st.session_state.current_file_name}**")
 
 # ==========================================
-# 初始化 Agent 和工具列表 (RAG 逻辑)
+# 初始化 Agent (带有实时日期注入)
 # ==========================================
 tools = [
     TavilySearchResults(max_results=3, description="用于搜索互联网上的实时信息。"),
@@ -370,7 +356,6 @@ tools = [
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
     tmp_path = st.session_state.current_file_path
     fname = st.session_state.current_file_name
-    
     if not fname.endswith(".csv"):
         with st.spinner("知识库静默加载中..."):
             if fname.endswith(".pdf"):
@@ -391,7 +376,14 @@ if "current_file_path" in st.session_state and st.session_state.current_file_pat
             retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "用于搜索用户文档的内容。")
             tools.append(retriever_tool)
 
-system_prompt_text = """你是一个顶级的数据分析师与全能 AI 助手。你拥有强大的 Python 代码执行能力和网络爬虫能力！
+# 获取系统当天的真实时间注入给 AI
+current_time_str = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
+
+system_prompt_text = f"""你是一个顶级的数据分析师与全能 AI 助手。
+
+【重要：时间感知】
+当前的系统实时时间是：{current_time_str}。
+如果用户问到“今天”、“现在”等时间问题，请严格以此时间为准！
 
 【核心技能 1：分析文件与画图】
 1. 绝不允许对用户说“我无法生成图片”。你有能力画图！
@@ -422,23 +414,39 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # 主界面对话与图表渲染区
 # ==========================================
 
-# 1. 渲染绝对固定的吸顶标题 (利用 <h3 id="chat-title"> 与 CSS 绑定)
+# 1. 渲染绝对固定的吸顶标题栏 (使用 HTML 独立容器)
 current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
-st.markdown(f'<h3 id="chat-title">💬 {current_title}</h3>', unsafe_allow_html=True)
+st.markdown(f"""
+<div class="custom-fixed-header">
+    <h3>💬 {current_title}</h3>
+</div>
+""", unsafe_allow_html=True)
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
+
+# 定义一个纯 HTML 生成器，用于完美渲染右侧用户发言（单人头、无蓝色、左对齐文字）
+def render_user_message(content):
+    safe_content = content.replace('\n', '<br>')
+    html = f"""
+    <div style="display: flex; justify-content: flex-end; align-items: flex-start; margin-bottom: 25px; width: 100%;">
+        <div style="background-color: var(--secondary-background-color); color: var(--text-color); padding: 12px 18px; border-radius: 12px 4px 12px 12px; max-width: 75%; font-size: 16px; line-height: 1.6; word-wrap: break-word; text-align: left; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+            {safe_content}
+        </div>
+        <div style="margin-left: 12px; font-size: 26px; line-height: 1; padding-top: 5px;">
+            🧑‍💻
+        </div>
+    </div>
+    """
+    st.markdown(html, unsafe_allow_html=True)
 
 # 2. 渲染历史消息
 for msg in st.session_state.messages:
     content = msg["content"]
-    
     if msg["role"] == "user":
-        # 恢复使用原生的 st.chat_message 保证头像一致！通过注入隐形 div 触发 CSS 翻转机制。
-        with st.chat_message("user", avatar="🧑‍💻"):
-            st.markdown("<div class='user-msg' style='display: none;'></div>", unsafe_allow_html=True)
-            st.markdown(content)
-            
+        # 用户发言完全脱离 Streamlit 原生组件，使用手写纯净 HTML 布局
+        render_user_message(content)
     elif msg["role"] == "assistant":
+        # AI 保持原生组件在左侧渲染，以支持复杂的组件和图表
         with st.chat_message("assistant", avatar="🤖"):
             chart_paths = re.findall(r'\[CHART_PATH:(.*?)\]', content)
             clean_content = re.sub(r'\[CHART_PATH:.*?\]', '', content).strip()
@@ -460,10 +468,8 @@ if user_input := st.chat_input("输入问题，或点击左侧工具栏..."):
 
     save_message(st.session_state.current_session_id, "user", user_input)
     
-    # 用户新发言：原生组件 + 隐形 CSS 触发器
-    with st.chat_message("user", avatar="🧑‍💻"):
-        st.markdown("<div class='user-msg' style='display: none;'></div>", unsafe_allow_html=True)
-        st.markdown(user_input)
+    # 即刻渲染用户最新发言
+    render_user_message(user_input)
 
     chat_history = [
         ("human", msg["content"]) if msg["role"] == "user" else ("ai", msg["content"])
