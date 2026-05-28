@@ -45,38 +45,26 @@ st.markdown("""
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     
-    /* 【核心魔法：微信级左右对话布局】 */
-    /* 识别包含 user-msg 标记的消息框，将其反向排列（头像在右） */
-    div[data-testid="stChatMessage"]:has(.user-msg) {
-        flex-direction: row-reverse;
-    }
-    /* 调整右侧头像的左右间距 */
-    div[data-testid="stChatMessage"]:has(.user-msg) > div:first-child {
-        margin-left: 1rem;
-        margin-right: 0;
-    }
-    /* 让用户消息的内容块靠右对齐 */
-    div[data-testid="stChatMessage"]:has(.user-msg) > div:nth-child(2) {
-        display: flex;
-        flex-direction: column;
-        align-items: flex-end;
-        text-align: right;
-    }
-    
-    /* 【分层设计】顶部标题的样式 */
-    .chat-header {
+    /* 【悬浮吸顶标题栏】利用 var 变量完美自适应深浅色模式 */
+    .sticky-header {
+        position: sticky;
+        top: 2.5rem; /* 悬浮在 Streamlit 顶栏下方 */
+        z-index: 999;
+        background-color: var(--background-color); /* 随系统自动切换黑白背景 */
+        padding: 15px 0;
+        margin-top: -1.5rem;
+        margin-bottom: 2rem;
+        border-bottom: 1px solid var(--secondary-background-color);
+        box-shadow: 0 6px 15px -4px rgba(0,0,0,0.1); /* 产生“悬浮层次感”的阴影 */
         text-align: center;
-        font-size: 1.5rem;
-        font-weight: bold;
-        color: #333;
-        padding-bottom: 15px;
-        margin-bottom: 20px;
-        border-bottom: 1px solid #eaeaea; /* 分层隔离线 */
+        border-radius: 0 0 15px 15px; /* 底部圆角 */
     }
     
-    /* 适配暗黑模式的标题颜色 */
-    @media (prefers-color-scheme: dark) {
-        .chat-header { color: #f0f0f0; border-bottom: 1px solid #444; }
+    .sticky-header h3 {
+        margin: 0;
+        color: var(--text-color); /* 随系统自动切换黑白字体 */
+        font-size: 1.3rem;
+        font-weight: bold;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -396,21 +384,37 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # ==========================================
 # 主界面对话与图表渲染区
 # ==========================================
-# 顶部渲染当前的对话标题与分层横线
-current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
-st.markdown(f"<div class='chat-header'>💬 {current_title}</div>", unsafe_allow_html=True)
 
-# 渲染历史消息
+# 1. 渲染带阴影和深浅色自适应的悬浮吸顶标题
+current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
+st.markdown(f"""
+<div class="sticky-header">
+    <h3>💬 {current_title}</h3>
+</div>
+""", unsafe_allow_html=True)
+
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
+# 2. 渲染历史消息
 for msg in st.session_state.messages:
-    with st.chat_message(msg["role"]):
-        # 【重要】如果是用户发言，悄悄注入一个 user-msg 的隐形 span 触发 CSS 翻转
-        if msg["role"] == "user":
-            st.markdown("<span class='user-msg'></span>", unsafe_allow_html=True)
-            
-        content = msg["content"]
-        if msg["role"] == "assistant":
+    content = msg["content"]
+    
+    if msg["role"] == "user":
+        # 用户消息：使用纯 HTML 彻底实现右对齐气泡（不依赖 Streamlit 脆弱的 chat_message）
+        safe_content = content.replace('\n', '<br>')
+        user_html = f"""
+        <div style="display: flex; flex-direction: row-reverse; align-items: flex-start; margin-bottom: 1.5rem; gap: 12px; width: 100%;">
+            <div style="font-size: 1.8rem; line-height: 1.2;">🧑‍💻</div>
+            <div style="background-color: var(--primary-color); color: #ffffff; padding: 0.8rem 1.2rem; border-radius: 15px 4px 15px 15px; max-width: 80%; box-shadow: 0 2px 6px rgba(0,0,0,0.1); font-family: sans-serif; line-height: 1.6; word-wrap: break-word;">
+                {safe_content}
+            </div>
+        </div>
+        """
+        st.markdown(user_html, unsafe_allow_html=True)
+        
+    elif msg["role"] == "assistant":
+        # AI 消息：保持在左侧不变，正常渲染图表
+        with st.chat_message("assistant", avatar="🤖"):
             chart_paths = re.findall(r'\[CHART_PATH:(.*?)\]', content)
             clean_content = re.sub(r'\[CHART_PATH:.*?\]', '', content).strip()
             if clean_content:
@@ -422,27 +426,34 @@ for msg in st.session_state.messages:
                         st.plotly_chart(fig, use_container_width=True)
                     except Exception as e:
                         st.error(f"图表加载失败: {e}")
-        else:
-            st.markdown(content)
 
-# 输入与生成逻辑
+# 3. 输入与生成逻辑
 if user_input := st.chat_input("输入问题，或点击左侧工具栏..."):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
 
     save_message(st.session_state.current_session_id, "user", user_input)
-    with st.chat_message("user"):
-        # 用户新发言同样注入 span
-        st.markdown("<span class='user-msg'></span>", unsafe_allow_html=True)
-        st.markdown(user_input)
+    
+    # 即刻渲染用户最新输入（原生 HTML 右对齐气泡）
+    safe_input = user_input.replace('\n', '<br>')
+    user_html = f"""
+    <div style="display: flex; flex-direction: row-reverse; align-items: flex-start; margin-bottom: 1.5rem; gap: 12px; width: 100%;">
+        <div style="font-size: 1.8rem; line-height: 1.2;">🧑‍💻</div>
+        <div style="background-color: var(--primary-color); color: #ffffff; padding: 0.8rem 1.2rem; border-radius: 15px 4px 15px 15px; max-width: 80%; box-shadow: 0 2px 6px rgba(0,0,0,0.1); font-family: sans-serif; line-height: 1.6; word-wrap: break-word;">
+            {safe_input}
+        </div>
+    </div>
+    """
+    st.markdown(user_html, unsafe_allow_html=True)
 
     chat_history = [
         ("human", msg["content"]) if msg["role"] == "user" else ("ai", msg["content"])
         for msg in st.session_state.messages
     ]
 
-    with st.chat_message("assistant"):
+    # AI 生成回复展示区
+    with st.chat_message("assistant", avatar="🤖"):
         st_callback = StreamlitCallbackHandler(st.container())
         st.session_state.temp_chart_paths = []
         
