@@ -7,3 +7,6 @@ faiss-cpu
 pypdf
 docx2txt
 tavily-python
+pandas
+matplotlib
+plotly
