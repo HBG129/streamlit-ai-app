@@ -1,5 +1,6 @@
 streamlit
 langchain>=0.2.0
+langchain-classic
 langchain-openai
 langchain-community
 langchain-text-splitters
