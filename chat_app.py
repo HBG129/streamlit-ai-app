@@ -6,6 +6,7 @@ import uuid
 from datetime import datetime
 import sys
 import io
+import logging
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -17,12 +18,15 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoader
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
+# 【新增】高级 RAG 核心组件：多路查询重写器
+from langchain.retrievers.multi_query import MultiQueryRetriever
+
+# 开启日志，这样你能在控制台看到大模型是怎么重写问题的，满满的高级感
+logging.basicConfig()
+logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
 
 st.set_page_config(page_title="全能 AI 助手", page_icon="🤖", layout="wide")
 
-# ==========================================
-# 0. 数据库初始化与管理操作 (新增了删除功能)
-# ==========================================
 def init_db():
     conn = sqlite3.connect('chat_history.db')
     c = conn.cursor()
@@ -77,7 +81,6 @@ def clear_session_messages(session_id):
     conn.commit()
     conn.close()
 
-# 【新增】彻底删除某个会话及其所有消息
 def delete_session(session_id):
     conn = sqlite3.connect('chat_history.db')
     c = conn.cursor()
@@ -95,9 +98,6 @@ if "current_session_id" not in st.session_state:
     else:
         st.session_state.current_session_id = create_new_session()
 
-# ==========================================
-# 1. API 密钥与大模型配置
-# ==========================================
 try:
     os.environ["OPENAI_API_KEY"] = st.secrets["ZHIPU_API_KEY"]
     os.environ["OPENAI_API_BASE"] = "https://open.bigmodel.cn/api/paas/v4/"
@@ -108,9 +108,6 @@ except KeyError as e:
 
 llm = ChatOpenAI(model="glm-4-flash", temperature=0.5, streaming=True)
 
-# ==========================================
-# 2. 自定义工具：代码执行器 (Code Interpreter)
-# ==========================================
 @tool
 def run_python_code(code: str) -> str:
     """
@@ -128,9 +125,6 @@ def run_python_code(code: str) -> str:
         sys.stdout = old_stdout
         return f"代码执行出错: {str(e)}"
 
-# ==========================================
-# 3. 侧边栏：UI 与文件处理
-# ==========================================
 with st.sidebar:
     st.header("💬 对话管理")
     if st.button("➕ 新建对话", use_container_width=True, type="primary"):
@@ -140,7 +134,6 @@ with st.sidebar:
     st.markdown("**历史对话列表：**")
     sessions = get_all_sessions()
     for s_id, title in sessions:
-        # 【新增】使用左右分栏，左边是对话按钮，右边是删除按钮
         col1, col2 = st.columns([5, 1])
         with col1:
             btn_label = f"🟢 {title}" if s_id == st.session_state.current_session_id else f"💬 {title}"
@@ -151,7 +144,6 @@ with st.sidebar:
             if st.button("🗑️", key=f"del_{s_id}", help="删除此对话"):
                 delete_session(s_id)
                 if st.session_state.current_session_id == s_id:
-                    # 如果删除了当前对话，自动跳转到其他对话或新建
                     rem_sessions = get_all_sessions()
                     st.session_state.current_session_id = rem_sessions[0][0] if rem_sessions else create_new_session()
                 st.rerun()
@@ -173,20 +165,17 @@ with st.sidebar:
         chat_text = "\n\n".join([f"{msg['role'].upper()}:\n{msg['content']}" for msg in current_msgs])
         st.download_button("💾 导出当前聊天记录", data=chat_text, file_name="聊天记录.txt", mime="text/plain", use_container_width=True)
 
-# ==========================================
-# 4. 动态构建工具箱与 Agent
-# ==========================================
 tools = [
     TavilySearchResults(max_results=3, description="用于搜索互联网上的实时信息，如天气、新闻。如果问题涉及实时数据，必须使用此工具。"),
-    run_python_code # 【新增】挂载 Python 解释器工具
+    run_python_code
 ]
 
 if uploaded_file is not None:
-    with st.spinner("正在把文件塞进 AI 的脑子里..."):
+    with st.spinner("正在启动高级 RAG 引擎解析文件..."):
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
-            st.session_state.current_file_path = tmp_path # 记录路径给 Python 解释器用
+            st.session_state.current_file_path = tmp_path
 
         if uploaded_file.name.endswith(".pdf"):
             loader = PyPDFLoader(tmp_path)
@@ -200,13 +189,18 @@ if uploaded_file is not None:
         splits = text_splitter.split_documents(docs)
         embeddings = OpenAIEmbeddings(model="embedding-3") 
         vectorstore = FAISS.from_documents(splits, embeddings)
-        retriever = vectorstore.as_retriever()
         
-        retriever_tool = create_retriever_tool(retriever, "document_search", "当你需要回答关于用户上传的文档里的内容时，可以使用此工具搜索。")
+        # 【进阶改动】基础检索器升级为多路查询高级检索器
+        base_retriever = vectorstore.as_retriever()
+        advanced_retriever = MultiQueryRetriever.from_llm(
+            retriever=base_retriever, 
+            llm=llm
+        )
+        
+        retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "当你需要回答关于用户上传的文档里的内容时，可以使用此工具搜索。")
         tools.append(retriever_tool)
-        st.success(f"✅ 文件 {uploaded_file.name} 已加载！")
+        st.success(f"✅ 文件 {uploaded_file.name} 已加载，并已开启多路并发检索！")
 
-# 【进化】系统提示词升级，教会 AI 如何结合文件路径写代码
 system_prompt_text = """你是一个企业级全能 AI 助手，拥有多种工具：
 1. 遇到不知道的实时信息，必须使用 search_tool。
 2. 遇到关于长文档的文本内容问答，使用 document_search。
@@ -225,10 +219,7 @@ prompt = ChatPromptTemplate.from_messages([
 agent = create_tool_calling_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-# ==========================================
-# 5. 聊天主界面逻辑
-# ==========================================
-st.title("🤖 满血版企业级 AI (多会话 + 数据分析 Agent)")
+st.title("🤖 满血版企业级 AI (高级 RAG + Agent)")
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
@@ -236,7 +227,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if user_input := st.chat_input("尝试上传一个表格，然后对我说：帮我用代码分析一下这份数据的规律"):
+if user_input := st.chat_input("传个文档，故意用同义词考考我的高级检索能力！"):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
