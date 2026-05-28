@@ -8,7 +8,7 @@ import sys
 import io
 import logging
 import re
-import plotly.io as pio  # 用于将图表保存为持久化 JSON 文件
+import plotly.io as pio
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -28,11 +28,16 @@ logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
 
 st.set_page_config(page_title="全能 AI 助手", page_icon="🤖", layout="wide")
 
-# 确保持久化图表的文件夹存在
+# 确保存放图表的本地文件夹存在
 if not os.path.exists("saved_charts"):
     os.makedirs("saved_charts")
 
-def init_db():
+# ==========================================
+# 数据库管理区
+# ==========================================
+
+def init_chat_db():
+    """初始化聊天记录数据库（部署在云端时，重启会清空，不影响业务）"""
     conn = sqlite3.connect('chat_history.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, title TEXT, created_at DATETIME)''')
@@ -40,6 +45,34 @@ def init_db():
     conn.commit()
     conn.close()
 
+def init_business_db():
+    """
+    初始化企业数据库。
+    【重点】如果你已经把 company_data.db 传到了 GitHub，这里只会读取，不会覆盖！
+    如果文件不存在，它会自动建一些假数据供你测试。
+    """
+    conn = sqlite3.connect('company_data.db')
+    c = conn.cursor()
+    # 创建员工表
+    c.execute('''CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY, name TEXT, department TEXT, salary INTEGER, join_date DATE)''')
+    # 创建销量表
+    c.execute('''CREATE TABLE IF NOT EXISTS product_sales (id INTEGER PRIMARY KEY, product_name TEXT, category TEXT, revenue INTEGER, units_sold INTEGER)''')
+    
+    # 只有当表是空的时候，才插入测试数据（防止覆盖你 GitHub 上的真实数据）
+    c.execute("SELECT COUNT(*) FROM employees")
+    if c.fetchone()[0] == 0:
+        c.executemany("INSERT INTO employees (name, department, salary, join_date) VALUES (?, ?, ?, ?)",
+                      [('张三', '技术部', 25000, '2023-01-15'), ('李四', '销售部', 15000, '2022-03-10'), 
+                       ('王五', '技术部', 28000, '2021-07-22'), ('赵六', 'HR', 12000, '2023-11-01'),
+                       ('孙七', '销售部', 18000, '2023-05-20'), ('周八', '财务部', 16000, '2020-02-18')])
+        c.executemany("INSERT INTO product_sales (product_name, category, revenue, units_sold) VALUES (?, ?, ?, ?)",
+                      [('旗舰手机X', '电子产品', 500000, 100), ('降噪耳机', '电子产品', 150000, 300), 
+                       ('人体工学椅', '办公用品', 80000, 50), ('机械键盘', '电子产品', 45000, 150),
+                       ('无线鼠标', '电子产品', 20000, 200), ('打印纸', '办公用品', 5000, 500)])
+        conn.commit()
+    conn.close()
+
+# 会话管理相关函数
 def create_new_session(title="新对话"):
     session_id = str(uuid.uuid4())
     conn = sqlite3.connect('chat_history.db')
@@ -94,7 +127,9 @@ def delete_session(session_id):
     conn.commit()
     conn.close()
 
-init_db()
+# 初始化两个数据库
+init_chat_db()
+init_business_db() 
 
 if "current_session_id" not in st.session_state:
     sessions = get_all_sessions()
@@ -103,7 +138,9 @@ if "current_session_id" not in st.session_state:
     else:
         st.session_state.current_session_id = create_new_session()
 
-# 验证所有必须的 API Key
+# ==========================================
+# 密钥与大模型配置区
+# ==========================================
 try:
     _ = st.secrets["DEEPSEEK_API_KEY"]
     _ = st.secrets["ZHIPU_API_KEY"]
@@ -117,10 +154,13 @@ llm = ChatOpenAI(
     model="deepseek-chat", 
     api_key=st.secrets["DEEPSEEK_API_KEY"], 
     base_url="https://api.deepseek.com", 
-    temperature=0.2, 
+    temperature=0.1,  # 保持0.1，让AI写SQL更严谨
     streaming=True
 )
 
+# ==========================================
+# 工具区 (Agent Tools)
+# ==========================================
 @tool
 def run_python_code(code: str) -> str:
     """
@@ -132,21 +172,19 @@ def run_python_code(code: str) -> str:
     old_stdout = sys.stdout
     redirected_output = sys.stdout = io.StringIO()
     
-    # 每次运行工具前，确保存放图表路径的临时列表存在
     if "temp_chart_paths" not in st.session_state:
         st.session_state.temp_chart_paths = []
 
-    # 【终极核心】：拦截 st.plotly_chart 的执行，把图片偷偷保存到本地磁盘！
     class MockSt:
         def __getattr__(self, name):
-            return getattr(st, name) # 其他 st 函数正常放行
+            return getattr(st, name)
         
         def plotly_chart(self, fig, **kwargs):
             cid = str(uuid.uuid4())
             cpath = f"saved_charts/{cid}.json"
-            pio.write_json(fig, cpath)  # 把图表对象转为 JSON 存在硬盘
-            st.session_state.temp_chart_paths.append(cpath) # 记录路径
-            st.plotly_chart(fig, **kwargs) # 临时在执行框里显示一下
+            pio.write_json(fig, cpath)
+            st.session_state.temp_chart_paths.append(cpath)
+            st.plotly_chart(fig, **kwargs)
 
     try:
         global_env = {
@@ -156,7 +194,6 @@ def run_python_code(code: str) -> str:
         }
         exec(code, global_env)
         
-        # 【防呆设计】：如果大模型犯傻，没调用 st.plotly_chart，但生成了 fig 变量，我们直接给它兜底强行保存！
         if 'fig' in global_env and not st.session_state.temp_chart_paths:
             fig = global_env['fig']
             cid = str(uuid.uuid4())
@@ -170,6 +207,35 @@ def run_python_code(code: str) -> str:
         sys.stdout = old_stdout
         return f"代码执行出错: {str(e)}"
 
+@tool
+def run_sql_query(sql: str) -> str:
+    """
+    用于查询公司企业数据库 (company_data.db)。
+    输入必须是合法的 SQLite SQL 查询语句。
+    执行后会返回查询结果。
+    """
+    try:
+        # 直接连接本地/GitHub传上来的那个库
+        conn = sqlite3.connect('company_data.db')
+        c = conn.cursor()
+        c.execute(sql)
+        rows = c.fetchall()
+        columns = [description[0] for description in c.description] if c.description else []
+        conn.close()
+        
+        if not rows:
+            return "查询成功，但结果为空。"
+            
+        res = f"列名: {columns}\n数据 (最多展示前50行):\n"
+        for row in rows[:50]:
+            res += str(row) + "\n"
+        return res
+    except Exception as e:
+        return f"SQL执行出错: {str(e)}"
+
+# ==========================================
+# 侧边栏 UI
+# ==========================================
 with st.sidebar:
     st.header("💬 对话管理")
     if st.button("➕ 新建对话", use_container_width=True, type="primary"):
@@ -205,11 +271,16 @@ with st.sidebar:
         st.success("当前记忆已清空！")
         st.rerun()
 
+# ==========================================
+# 初始化 Agent 和工具列表
+# ==========================================
 tools = [
     TavilySearchResults(max_results=3, description="用于搜索互联网上的实时信息。"),
-    run_python_code
+    run_python_code,
+    run_sql_query
 ]
 
+# RAG 文档处理
 if uploaded_file is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
         tmp_file.write(uploaded_file.getvalue())
@@ -239,8 +310,16 @@ if uploaded_file is not None:
             tools.append(retriever_tool)
             st.success(f"✅ 文件 {uploaded_file.name} 已加载！")
 
+# 告诉 AI 数据库的结构
 system_prompt_text = """你是一个企业级全能 AI 助手。
-当用户需要画图时，调用 run_python_code 生成图表，无需废话。"""
+当用户需要画图时，调用 run_python_code 生成图表，无需废话。
+
+【数据库说明】
+你可以使用 run_sql_query 工具查询公司的 SQLite 数据库 (company_data.db)。库中包含两张表：
+1. employees 表：id, name(姓名), department(部门), salary(薪资), join_date(入职日期)
+2. product_sales 表：id, product_name(产品名), category(类别), revenue(营收), units_sold(销量)
+
+如果用户想看数据图表，你可以先用 run_sql_query 查出数据，然后再把查到的数据放进 run_python_code 里画图！"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
     system_prompt_text += f"\n\n[机密] 最新本地文件路径: '{st.session_state.current_file_path}'。如果是表格直接 read_csv 读取。"
@@ -255,26 +334,24 @@ prompt = ChatPromptTemplate.from_messages([
 agent = create_tool_calling_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-st.title("🤖 满血版企业级 AI (高级 RAG + 数据分析师)")
+# ==========================================
+# 主界面对话区
+# ==========================================
+st.title("🤖 满血版企业级 AI (直接读取 GitHub 数据库)")
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
-# ====================================================
-# 【极其核心的图表渲染区】：遍历历史消息，如果是图表标记，直接渲染原图！
-# ====================================================
+# 历史消息与图表渲染
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         content = msg["content"]
         if msg["role"] == "assistant":
-            # 用正则抠出隐藏在文本里的图表路径
             chart_paths = re.findall(r'\[CHART_PATH:(.*?)\]', content)
-            # 删掉这些隐藏标记，不让用户看到丑陋的代码路径
             clean_content = re.sub(r'\[CHART_PATH:.*?\]', '', content).strip()
             
             if clean_content:
                 st.markdown(clean_content)
                 
-            # 依次将存放在硬盘里的 JSON 重新复活成完美的可交互图表！
             for cpath in chart_paths:
                 if os.path.exists(cpath):
                     try:
@@ -285,7 +362,8 @@ for msg in st.session_state.messages:
         else:
             st.markdown(content)
 
-if user_input := st.chat_input("传个文档，或者直接让我画个数据分析图表！"):
+# 用户输入处理
+if user_input := st.chat_input("问我关于公司员工薪资或产品销量的问题吧！也可以让我画图！"):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
@@ -301,8 +379,6 @@ if user_input := st.chat_input("传个文档，或者直接让我画个数据分
 
     with st.chat_message("assistant"):
         st_callback = StreamlitCallbackHandler(st.container())
-        
-        # 每次聊天前，清理临时存储器
         st.session_state.temp_chart_paths = []
         
         try:
@@ -312,15 +388,13 @@ if user_input := st.chat_input("传个文档，或者直接让我画个数据分
             )
             answer = response["output"]
             
-            # 【终极闭环】：悄悄把拦截到的图片路径追加到最终回答中，存入数据库！
+            # 隐藏记录图表路径
             if "temp_chart_paths" in st.session_state and st.session_state.temp_chart_paths:
                 for p in st.session_state.temp_chart_paths:
                     answer += f"\n[CHART_PATH:{p}]"
-                st.session_state.temp_chart_paths = [] # 归档后清空
+                st.session_state.temp_chart_paths = []
                 
             save_message(st.session_state.current_session_id, "assistant", answer)
-            
-            # 触发重新渲染加载图表
             st.rerun()
             
         except Exception as e:
