@@ -10,7 +10,8 @@ from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_core.output_parsers import StrOutputParser
 from langchain_community.tools import DuckDuckGoSearchRun
 from langchain_core.tools import create_retriever_tool
-from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain.agents import AgentExecutor
+from langchain_classic.agents import create_tool_calling_agent
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 
 st.set_page_config(page_title="我的全能 AI", page_icon="🤖")
