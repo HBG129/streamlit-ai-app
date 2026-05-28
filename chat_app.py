@@ -10,6 +10,8 @@ import logging
 import re
 import plotly.io as pio
 import plotly.graph_objects as go
+import requests
+from bs4 import BeautifulSoup
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -34,7 +36,7 @@ if not os.path.exists("saved_charts"):
     os.makedirs("saved_charts")
 
 # ==========================================
-# 数据库管理区 (维持不变，两个库完美分离)
+# 数据库管理区 (两个库完美分离)
 # ==========================================
 
 def init_chat_db():
@@ -64,7 +66,6 @@ def init_business_db():
         conn.commit()
     conn.close()
 
-# 会话管理相关函数
 def create_new_session(title="新对话"):
     session_id = str(uuid.uuid4())
     conn = sqlite3.connect('chat_history.db')
@@ -140,7 +141,7 @@ except KeyError as e:
     st.error(f"⚠️ 缺少 API Key: {e}。请检查 Secrets 配置！")
     st.stop()
 
-# 核心大脑：DeepSeek (保持0.1的低温度)
+# 核心大脑：DeepSeek 
 llm = ChatOpenAI(
     model="deepseek-chat", 
     api_key=st.secrets["DEEPSEEK_API_KEY"], 
@@ -150,7 +151,7 @@ llm = ChatOpenAI(
 )
 
 # ==========================================
-# 工具区 (全新智能防断连拦截器)
+# 工具区 
 # ==========================================
 @tool
 def run_python_code(code: str) -> str:
@@ -158,7 +159,6 @@ def run_python_code(code: str) -> str:
     运行 Python 代码进行复杂的数据分析、统计计算或绘制动态图表。
     输入必须是一段合法的 Python 脚本。
     """
-    # 依然拦截 matplotlib，强迫用 plotly
     if "matplotlib" in code or "plt." in code:
         return "【执行失败】请修改代码：禁止使用 matplotlib，请使用 plotly.express 画图，并将图表对象命名为 fig。"
 
@@ -168,7 +168,6 @@ def run_python_code(code: str) -> str:
     if "temp_chart_paths" not in st.session_state:
         st.session_state.temp_chart_paths = []
 
-    # 智能图表保存器
     def auto_save_and_render(f):
         cid = str(uuid.uuid4())
         cpath = f"saved_charts/{cid}.json"
@@ -190,17 +189,14 @@ def run_python_code(code: str) -> str:
             "px": __import__('plotly.express')
         }
         
-        # 屏蔽 AI 自带的 fig.show() 防止卡死
         code = code.replace("fig.show()", "")
         
         exec(code, global_env)
         
-        # 【神级兜底】：如果AI忘了写 st.plotly_chart，我们自己去环境变量里捞它的图！
         if not st.session_state.temp_chart_paths:
             if 'fig' in global_env and isinstance(global_env['fig'], go.Figure):
                 auto_save_and_render(global_env['fig'])
             else:
-                # 连 fig 名字都写错了？没关系，遍历找！
                 for val in global_env.values():
                     if isinstance(val, go.Figure):
                         auto_save_and_render(val)
@@ -236,6 +232,37 @@ def run_sql_query(sql: str) -> str:
         return res
     except Exception as e:
         return f"SQL执行出错: {str(e)}"
+
+@tool
+def fetch_web_content(url: str) -> str:
+    """
+    用于抓取和阅读指定网页的完整文本内容。
+    当你通过搜索发现了一个感兴趣的链接，或者用户直接给你一个 URL 让你总结、提取数据时，必须调用此工具。
+    输入必须是一个合法的 http 或 https 链接。
+    """
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        for script in soup(["script", "style", "nav", "footer", "header"]):
+            script.extract()
+            
+        text = soup.get_text(separator='\n')
+        
+        lines = (line.strip() for line in text.splitlines())
+        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+        text = '\n'.join(chunk for chunk in chunks if chunk)
+        
+        if len(text) > 10000:
+            return text[:10000] + "\n\n...(文章过长，已截断)..."
+        return text
+    except Exception as e:
+        return f"抓取网页失败: {str(e)}"
 
 # ==========================================
 # 侧边栏 UI
@@ -281,7 +308,8 @@ with st.sidebar:
 tools = [
     TavilySearchResults(max_results=3, description="用于搜索互联网上的实时信息。"),
     run_python_code,
-    run_sql_query
+    run_sql_query,
+    fetch_web_content
 ]
 
 # RAG 及文件处理
@@ -314,11 +342,11 @@ if uploaded_file is not None:
             tools.append(retriever_tool)
             st.success(f"✅ 文件 {uploaded_file.name} 已加载！")
 
-# 【优化版提示词】：减轻 AI 压力，告诉它直接写图表即可
-system_prompt_text = """你是一个顶级的数据分析师与全能 AI 助手。你拥有强大的 Python 代码执行能力！
+# 全面升级版提示词
+system_prompt_text = """你是一个顶级的数据分析师与全能 AI 助手。你拥有强大的 Python 代码执行能力和网络爬虫能力！
 
 【核心技能 1：分析文件与画图】
-1. 绝不允许对用户说“我无法生成图片”或“请截图下载”。你有能力画图！
+1. 绝不允许对用户说“我无法生成图片”。你有能力画图！
 2. 只要用户要求画图（或处理CSV文件），你**必须**调用 `run_python_code` 工具写代码。
 3. 【红线规则】：禁止使用 matplotlib。只能使用 plotly.express (px) 画图！
 4. 你只需要将生成的图表赋值给变量 `fig`，系统会自动帮你渲染并展示给用户，无需调用 .show()！
@@ -328,7 +356,10 @@ system_prompt_text = """你是一个顶级的数据分析师与全能 AI 助手�
 1. employees 表：id, name(姓名), department(部门), salary(薪资), join_date(入职日期)
 2. product_sales 表：id, product_name(产品名), category(类别), revenue(营收), units_sold(销量)
 
-💡 工作流：如果用户想看数据库的数据图表，先用 `run_sql_query` 查出具体数据，然后把数据写入 `run_python_code` 生成 DataFrame 并用 plotly 画出来！"""
+💡 工作流：如果用户想看数据库的数据图表，先用 `run_sql_query` 查出具体数据，然后把数据写入 `run_python_code` 生成 DataFrame 并用 plotly 画出来！
+
+【核心技能 3：深度网络爬虫】
+如果用户给你一个具体的 URL 链接，或者你需要深入了解某个搜索结果的详细内容，请立刻调用 `fetch_web_content` 工具去抓取全文，然后再回答用户！"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
     system_prompt_text += f"\n\n[机密指令] 用户刚刚上传了文件，文件绝对路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格，请直接用 pandas.read_csv 读取该路径并画图！"
@@ -346,7 +377,7 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # ==========================================
 # 主界面对话与图表渲染区
 # ==========================================
-st.title("🤖 满血版企业级 AI (超级稳定不报错版)")
+st.title("🤖 满血版企业级 AI (支持爬虫与全功能)")
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
@@ -370,7 +401,7 @@ for msg in st.session_state.messages:
         else:
             st.markdown(content)
 
-if user_input := st.chat_input("上传CSV让我画图，或者直接问我公司数据库的情况！"):
+if user_input := st.chat_input("上传CSV作图、查数据库、或者丢个网址让我抓取文章！"):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
