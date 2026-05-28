@@ -45,26 +45,63 @@ st.markdown("""
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
     
-    /* 【悬浮吸顶标题栏】利用 var 变量完美自适应深浅色模式 */
-    .sticky-header {
-        position: sticky;
-        top: 2.5rem; /* 悬浮在 Streamlit 顶栏下方 */
-        z-index: 999;
-        background-color: var(--background-color); /* 随系统自动切换黑白背景 */
-        padding: 15px 0;
-        margin-top: -1.5rem;
-        margin-bottom: 2rem;
-        border-bottom: 1px solid var(--secondary-background-color);
-        box-shadow: 0 6px 15px -4px rgba(0,0,0,0.1); /* 产生“悬浮层次感”的阴影 */
-        text-align: center;
-        border-radius: 0 0 15px 15px; /* 底部圆角 */
-    }
-    
-    .sticky-header h3 {
+    /* ==========================================
+       【核心修复 1】固定吸顶标题，永远显示在最上方
+       ========================================== */
+    h3#chat-title {
+        position: fixed;
+        top: 2.875rem; /* 悬浮在 Streamlit 默认顶栏的下方 */
+        left: 0;
+        right: 0;
         margin: 0;
-        color: var(--text-color); /* 随系统自动切换黑白字体 */
+        padding: 15px 0;
+        background-color: var(--background-color); /* 自动适应白天/黑夜模式 */
+        z-index: 999;
+        text-align: center;
+        border-bottom: 1px solid var(--secondary-background-color);
+        box-shadow: 0 4px 15px rgba(0,0,0,0.05); /* 产生分层质感的阴影 */
         font-size: 1.3rem;
         font-weight: bold;
+        color: var(--text-color);
+    }
+    
+    /* 为了防止固定的标题挡住最开始的聊天记录，给主区域顶部强行增加留白 */
+    .block-container {
+        padding-top: 5rem !important;
+    }
+
+    /* ==========================================
+       【核心修复 2 & 3】原生组件右对齐 + 字体颜色修复
+       ========================================== */
+    /* 1. 拦截带有 .user-msg 标记的原生对话框，使其左右反转 */
+    [data-testid="stChatMessage"]:has(.user-msg) {
+        flex-direction: row-reverse;
+    }
+    
+    /* 2. 调整原生头像间距（大小由Streamlit接管，保证和AI完全一致！） */
+    [data-testid="stChatMessage"]:has(.user-msg) [data-testid="stChatMessageAvatarImage"],
+    [data-testid="stChatMessage"]:has(.user-msg) > div:first-child {
+        margin-right: 0 !important;
+        margin-left: 1rem !important;
+    }
+    
+    /* 3. 强制用户发言气泡变成微信蓝，调整圆角 */
+    [data-testid="stChatMessage"]:has(.user-msg) [data-testid="stChatMessageContent"] {
+        background-color: #007AFF !important;
+        border-radius: 15px 4px 15px 15px !important;
+        padding: 10px 16px !important;
+        max-width: 80% !important;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end; 
+    }
+    
+    /* 4. 【关键】强制用户气泡内的文字永远是白色，防止隐身！ */
+    [data-testid="stChatMessage"]:has(.user-msg) [data-testid="stChatMessageContent"] p,
+    [data-testid="stChatMessage"]:has(.user-msg) [data-testid="stChatMessageContent"] span {
+        color: #FFFFFF !important;
+        text-align: left; 
+        margin-bottom: 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -385,13 +422,9 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # 主界面对话与图表渲染区
 # ==========================================
 
-# 1. 渲染带阴影和深浅色自适应的悬浮吸顶标题
+# 1. 渲染绝对固定的吸顶标题 (利用 <h3 id="chat-title"> 与 CSS 绑定)
 current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
-st.markdown(f"""
-<div class="sticky-header">
-    <h3>💬 {current_title}</h3>
-</div>
-""", unsafe_allow_html=True)
+st.markdown(f'<h3 id="chat-title">💬 {current_title}</h3>', unsafe_allow_html=True)
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
@@ -400,20 +433,12 @@ for msg in st.session_state.messages:
     content = msg["content"]
     
     if msg["role"] == "user":
-        # 用户消息：使用纯 HTML 彻底实现右对齐气泡（不依赖 Streamlit 脆弱的 chat_message）
-        safe_content = content.replace('\n', '<br>')
-        user_html = f"""
-        <div style="display: flex; flex-direction: row-reverse; align-items: flex-start; margin-bottom: 1.5rem; gap: 12px; width: 100%;">
-            <div style="font-size: 1.8rem; line-height: 1.2;">🧑‍💻</div>
-            <div style="background-color: var(--primary-color); color: #ffffff; padding: 0.8rem 1.2rem; border-radius: 15px 4px 15px 15px; max-width: 80%; box-shadow: 0 2px 6px rgba(0,0,0,0.1); font-family: sans-serif; line-height: 1.6; word-wrap: break-word;">
-                {safe_content}
-            </div>
-        </div>
-        """
-        st.markdown(user_html, unsafe_allow_html=True)
-        
+        # 恢复使用原生的 st.chat_message 保证头像一致！通过注入隐形 div 触发 CSS 翻转机制。
+        with st.chat_message("user", avatar="🧑‍💻"):
+            st.markdown("<div class='user-msg' style='display: none;'></div>", unsafe_allow_html=True)
+            st.markdown(content)
+            
     elif msg["role"] == "assistant":
-        # AI 消息：保持在左侧不变，正常渲染图表
         with st.chat_message("assistant", avatar="🤖"):
             chart_paths = re.findall(r'\[CHART_PATH:(.*?)\]', content)
             clean_content = re.sub(r'\[CHART_PATH:.*?\]', '', content).strip()
@@ -435,17 +460,10 @@ if user_input := st.chat_input("输入问题，或点击左侧工具栏..."):
 
     save_message(st.session_state.current_session_id, "user", user_input)
     
-    # 即刻渲染用户最新输入（原生 HTML 右对齐气泡）
-    safe_input = user_input.replace('\n', '<br>')
-    user_html = f"""
-    <div style="display: flex; flex-direction: row-reverse; align-items: flex-start; margin-bottom: 1.5rem; gap: 12px; width: 100%;">
-        <div style="font-size: 1.8rem; line-height: 1.2;">🧑‍💻</div>
-        <div style="background-color: var(--primary-color); color: #ffffff; padding: 0.8rem 1.2rem; border-radius: 15px 4px 15px 15px; max-width: 80%; box-shadow: 0 2px 6px rgba(0,0,0,0.1); font-family: sans-serif; line-height: 1.6; word-wrap: break-word;">
-            {safe_input}
-        </div>
-    </div>
-    """
-    st.markdown(user_html, unsafe_allow_html=True)
+    # 用户新发言：原生组件 + 隐形 CSS 触发器
+    with st.chat_message("user", avatar="🧑‍💻"):
+        st.markdown("<div class='user-msg' style='display: none;'></div>", unsafe_allow_html=True)
+        st.markdown(user_input)
 
     chat_history = [
         ("human", msg["content"]) if msg["role"] == "user" else ("ai", msg["content"])
