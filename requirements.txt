@@ -6,4 +6,4 @@ langchain-text-splitters
 faiss-cpu
 pypdf
 docx2txt
-duckduckgo-search
+tavily-python
