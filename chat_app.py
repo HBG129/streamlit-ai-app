@@ -16,7 +16,7 @@ from langchain.tools.retriever import create_retriever_tool
 from langchain_core.tools import tool
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoader
+from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 from langchain.retrievers.multi_query import MultiQueryRetriever
 
@@ -107,9 +107,6 @@ except KeyError as e:
 
 llm = ChatOpenAI(model="glm-4-flash", temperature=0.5, streaming=True)
 
-# ==========================================
-# 【新增功能 1：图表可视化专家】
-# ==========================================
 @tool
 def run_python_code(code: str) -> str:
     """
@@ -117,14 +114,13 @@ def run_python_code(code: str) -> str:
     输入必须是一段合法的 Python 脚本。
     1. 如果有计算结果，务必使用 print() 打印，工具会捕获并返回。
     2. 如果用户要求画图（如折线图、柱状图、饼图等），你可以使用 matplotlib.pyplot 或 plotly。
-    3. 【非常重要】你的执行环境里已经内置了 st (Streamlit)。
+    3. 【非常重要】你的执行环境里已经内置了 st (Streamlit) 和 pd (pandas)。
        - 如果你用 matplotlib 画图，画完后必须调用 `st.pyplot(plt.gcf())` 将图表渲染到前端。
        - 如果你用 plotly 画图，画完后必须调用 `st.plotly_chart(fig)`。
     """
     old_stdout = sys.stdout
     redirected_output = sys.stdout = io.StringIO()
     try:
-        # 将 Streamlit 的 st 对象偷偷注入到执行环境中，让大模型能直接控制界面画图
         global_env = {"st": st, "pd": __import__('pandas')}
         exec(code, global_env)
         sys.stdout = old_stdout
@@ -178,44 +174,46 @@ tools = [
     run_python_code
 ]
 
+# 【核心修改：CSV文件绕过向量化，直达Python数据分析】
 if uploaded_file is not None:
-    with st.spinner("正在启动高级 RAG 引擎解析文件..."):
-        with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
-            tmp_file.write(uploaded_file.getvalue())
-            tmp_path = tmp_file.name
-            st.session_state.current_file_path = tmp_path
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
+        tmp_file.write(uploaded_file.getvalue())
+        tmp_path = tmp_file.name
+        st.session_state.current_file_path = tmp_path
 
-        if uploaded_file.name.endswith(".pdf"):
-            loader = PyPDFLoader(tmp_path)
-        elif uploaded_file.name.endswith(".csv"):
-            loader = CSVLoader(tmp_path, encoding="utf-8")
-        else:
-            loader = TextLoader(tmp_path, encoding="utf-8")
-        
-        docs = loader.load()
-        text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
-        splits = text_splitter.split_documents(docs)
-        embeddings = OpenAIEmbeddings(model="embedding-3") 
-        vectorstore = FAISS.from_documents(splits, embeddings)
-        
-        base_retriever = vectorstore.as_retriever()
-        advanced_retriever = MultiQueryRetriever.from_llm(
-            retriever=base_retriever, 
-            llm=llm
-        )
-        
-        retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "当你需要回答关于用户上传的文档里的内容时，可以使用此工具搜索。")
-        tools.append(retriever_tool)
-        st.success(f"✅ 文件 {uploaded_file.name} 已加载，并已开启多路并发检索！")
+    if uploaded_file.name.endswith(".csv"):
+        st.success(f"✅ 数据表 {uploaded_file.name} 已加载！（自动切换至代码直读模式，拒绝浪费 API 额度）")
+    else:
+        with st.spinner("正在启动高级 RAG 引擎解析文件..."):
+            if uploaded_file.name.endswith(".pdf"):
+                loader = PyPDFLoader(tmp_path)
+            else:
+                loader = TextLoader(tmp_path, encoding="utf-8")
+            
+            docs = loader.load()
+            text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+            splits = text_splitter.split_documents(docs)
+            embeddings = OpenAIEmbeddings(model="embedding-3") 
+            vectorstore = FAISS.from_documents(splits, embeddings)
+            
+            base_retriever = vectorstore.as_retriever()
+            advanced_retriever = MultiQueryRetriever.from_llm(
+                retriever=base_retriever, 
+                llm=llm
+            )
+            
+            retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "当你需要回答关于用户上传的文档里的内容时，可以使用此工具搜索。")
+            tools.append(retriever_tool)
+            st.success(f"✅ 文件 {uploaded_file.name} 已加载，并已开启多路并发检索！")
 
 system_prompt_text = """你是一个企业级全能 AI 助手，拥有多种工具：
 1. 遇到不知道的实时信息，必须使用 search_tool。
 2. 遇到关于长文档的文本内容问答，使用 document_search。
 3. 如果用户要求进行复杂计算、数据统计、或深度分析数据，你必须编写 Python 代码并使用 run_python_code 工具。
-   【画图指令】：如果用户要求绘制图表（折线图、柱状图等），请直接在 python 代码里使用 plt 或 plotly，并调用 st.pyplot(plt.gcf()) 将其画出！"""
+   【画图指令】：如果用户要求绘制图表，请直接在 python 代码里使用 matplotlib 或 plotly，并调用 st.pyplot(plt.gcf()) 或 st.plotly_chart(fig) 将其画出！画图时务必配置好中文字体以防乱码（如 plt.rcParams['font.sans-serif'] = ['SimHei']）。"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
-    system_prompt_text += f"\n\n[核心机密] 用户最新上传了本地文件，物理路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格，你可以在 python 代码里直接读取并用来画图！"
+    system_prompt_text += f"\n\n[核心机密] 用户最新上传了本地文件，物理路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格，你可以在 python 代码里直接使用 pd.read_csv 读取它进行统计和画图！"
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt_text),
