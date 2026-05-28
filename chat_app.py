@@ -16,7 +16,7 @@ st.title("🤖 满血版 AI 助手 (已接入 Tavily 搜索)")
 # ==========================================
 # 注意：务必在 Streamlit Cloud 的 Settings -> Secrets 中配置 TAVILY_API_KEY
 try:
-    os.environ["OPENAI_API_KEY"] = st.secrets["OPENAI_API_KEY"]
+    os.environ["OPENAI_API_KEY"] = st.secrets["ZHIPU_API_KEY"]
     os.environ["OPENAI_API_BASE"] = st.secrets.get("OPENAI_API_BASE", "https://open.bigmodel.cn/api/paas/v4/")
     os.environ["TAVILY_API_KEY"] = st.secrets["TAVILY_API_KEY"]
 except KeyError as e:
