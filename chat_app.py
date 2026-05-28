@@ -9,19 +9,19 @@ import io
 import logging
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-# 【核心修复】回归最经典、兼容所有版本的 initialize_agent
-from langchain.agents import initialize_agent, AgentType
-from langchain_core.messages import SystemMessage
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain.tools.retriever import create_retriever_tool
-from langchain.tools import tool
+from langchain_core.tools import tool
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoader
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
+# 【新增】高级 RAG 核心组件：多路查询重写器
 from langchain.retrievers.multi_query import MultiQueryRetriever
 
-# 开启日志
+# 开启日志，这样你能在控制台看到大模型是怎么重写问题的，满满的高级感
 logging.basicConfig()
 logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
 
@@ -190,6 +190,7 @@ if uploaded_file is not None:
         embeddings = OpenAIEmbeddings(model="embedding-3") 
         vectorstore = FAISS.from_documents(splits, embeddings)
         
+        # 【进阶改动】基础检索器升级为多路查询高级检索器
         base_retriever = vectorstore.as_retriever()
         advanced_retriever = MultiQueryRetriever.from_llm(
             retriever=base_retriever, 
@@ -201,26 +202,22 @@ if uploaded_file is not None:
         st.success(f"✅ 文件 {uploaded_file.name} 已加载，并已开启多路并发检索！")
 
 system_prompt_text = """你是一个企业级全能 AI 助手，拥有多种工具：
-1. 遇到不知道的实时信息，必须使用工具。
+1. 遇到不知道的实时信息，必须使用 search_tool。
 2. 遇到关于长文档的文本内容问答，使用 document_search。
 3. 如果用户要求进行复杂计算、数据统计、或深度分析数据，你必须编写 Python 代码并使用 run_python_code 工具执行分析（记得用 print 输出你要查看的结果）。"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
     system_prompt_text += f"\n\n[核心机密] 用户最新上传了本地文件，物理路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格分析，你可以直接在这个工具的 Python 代码里 import pandas 读取它进行统计！"
 
-# 【核心修复】使用最经典的 Agent 初始化方法
-agent_kwargs = {
-    "system_message": SystemMessage(content=system_prompt_text)
-}
+prompt = ChatPromptTemplate.from_messages([
+    ("system", system_prompt_text),
+    MessagesPlaceholder(variable_name="chat_history", optional=True),
+    ("human", "{input}"),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+])
 
-agent_executor = initialize_agent(
-    tools=tools,
-    llm=llm,
-    agent=AgentType.OPENAI_FUNCTIONS,  # GLM-4 完美兼容 OpenAI Function 格式
-    verbose=True,
-    agent_kwargs=agent_kwargs,
-    handle_parsing_errors=True
-)
+agent = create_tool_calling_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 st.title("🤖 满血版企业级 AI (高级 RAG + Agent)")
 
@@ -230,7 +227,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if user_input := st.chat_input("传个文档，或者让我查查天气、写个代码分析数据！"):
+if user_input := st.chat_input("传个文档，故意用同义词考考我的高级检索能力！"):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
@@ -239,22 +236,16 @@ if user_input := st.chat_input("传个文档，或者让我查查天气、写个
     with st.chat_message("user"):
         st.markdown(user_input)
 
-    # 【核心修复】为了彻底避开不同 LangChain 版本对 history 格式的严格校验，采用安全硬拼接
-    history_str = ""
-    if len(st.session_state.messages) > 0:
-        history_str = "【以下是过去的聊天记录，仅供参考】\n"
-        for msg in st.session_state.messages:
-            role_name = "用户" if msg["role"] == "user" else "AI助手"
-            history_str += f"{role_name}: {msg['content']}\n"
-        history_str += "\n【用户最新的问题】\n"
-
-    final_input = history_str + user_input
+    chat_history = [
+        ("human", msg["content"]) if msg["role"] == "user" else ("ai", msg["content"])
+        for msg in st.session_state.messages
+    ]
 
     with st.chat_message("assistant"):
         st_callback = StreamlitCallbackHandler(st.container())
         try:
             response = agent_executor.invoke(
-                {"input": final_input},
+                {"input": user_input, "chat_history": chat_history},
                 {"callbacks": [st_callback]}
             )
             answer = response["output"]
