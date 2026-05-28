@@ -1,8 +1,7 @@
 streamlit
-langchain>=0.2.0
-langchain-classic
-langchain-openai
-langchain-community
+langchain==0.2.16
+langchain-openai==0.1.23
+langchain-community==0.2.16
 langchain-text-splitters
 faiss-cpu
 pypdf
