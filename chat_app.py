@@ -25,20 +25,41 @@ from langchain_community.document_loaders import PyPDFLoader, TextLoader
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 from langchain.retrievers.multi_query import MultiQueryRetriever
 
+# ==========================================
+# 页面基础设置与 UI 美化 (极简 CSS)
+# ==========================================
+st.set_page_config(page_title="全能 AI 助手", page_icon="🤖", layout="wide")
+
+st.markdown("""
+<style>
+    /* 隐藏 Streamlit 默认的头部和底部 */
+    header {visibility: hidden;}
+    footer {visibility: hidden;}
+    
+    /* 按钮全局圆角与悬浮动效 */
+    .stButton>button {
+        border-radius: 8px;
+        transition: all 0.2s ease-in-out;
+    }
+    .stButton>button:hover {
+        transform: scale(1.02);
+    }
+    
+    /* 侧边栏元素间距微调，使其更紧凑 */
+    [data-testid="stSidebarNav"] {display: none;}
+</style>
+""", unsafe_allow_html=True)
+
 # 开启日志
 logging.basicConfig()
 logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
 
-st.set_page_config(page_title="全能 AI 助手", page_icon="🤖", layout="wide")
-
-# 确保存放图表的本地文件夹存在
 if not os.path.exists("saved_charts"):
     os.makedirs("saved_charts")
 
 # ==========================================
-# 数据库管理区 (两个库完美分离)
+# 数据库管理区
 # ==========================================
-
 def init_chat_db():
     conn = sqlite3.connect('chat_history.db')
     c = conn.cursor()
@@ -141,7 +162,6 @@ except KeyError as e:
     st.error(f"⚠️ 缺少 API Key: {e}。请检查 Secrets 配置！")
     st.stop()
 
-# 核心大脑：DeepSeek 
 llm = ChatOpenAI(
     model="deepseek-chat", 
     api_key=st.secrets["DEEPSEEK_API_KEY"], 
@@ -155,44 +175,26 @@ llm = ChatOpenAI(
 # ==========================================
 @tool
 def run_python_code(code: str) -> str:
-    """
-    运行 Python 代码进行复杂的数据分析、统计计算或绘制动态图表。
-    输入必须是一段合法的 Python 脚本。
-    """
+    """运行 Python 代码进行数据分析或画图"""
     if "matplotlib" in code or "plt." in code:
         return "【执行失败】请修改代码：禁止使用 matplotlib，请使用 plotly.express 画图，并将图表对象命名为 fig。"
-
     old_stdout = sys.stdout
     redirected_output = sys.stdout = io.StringIO()
-    
     if "temp_chart_paths" not in st.session_state:
         st.session_state.temp_chart_paths = []
-
     def auto_save_and_render(f):
         cid = str(uuid.uuid4())
         cpath = f"saved_charts/{cid}.json"
         pio.write_json(f, cpath)
         st.session_state.temp_chart_paths.append(cpath)
         st.plotly_chart(f, use_container_width=True)
-
     class MockSt:
-        def __getattr__(self, name):
-            return getattr(st, name)
-        
-        def plotly_chart(self, f, **kwargs):
-            auto_save_and_render(f)
-
+        def __getattr__(self, name): return getattr(st, name)
+        def plotly_chart(self, f, **kwargs): auto_save_and_render(f)
     try:
-        global_env = {
-            "st": MockSt(), 
-            "pd": __import__('pandas'),
-            "px": __import__('plotly.express')
-        }
-        
+        global_env = {"st": MockSt(), "pd": __import__('pandas'), "px": __import__('plotly.express')}
         code = code.replace("fig.show()", "")
-        
         exec(code, global_env)
-        
         if not st.session_state.temp_chart_paths:
             if 'fig' in global_env and isinstance(global_env['fig'], go.Figure):
                 auto_save_and_render(global_env['fig'])
@@ -201,20 +203,15 @@ def run_python_code(code: str) -> str:
                     if isinstance(val, go.Figure):
                         auto_save_and_render(val)
                         break
-
         sys.stdout = old_stdout
-        return redirected_output.getvalue() + "\n（代码执行成功，图表已完美生成并保存给用户）"
+        return redirected_output.getvalue() + "\n（代码执行成功，图表已保存）"
     except Exception as e:
         sys.stdout = old_stdout
         return f"代码执行出错: {str(e)}"
 
 @tool
 def run_sql_query(sql: str) -> str:
-    """
-    用于查询公司企业数据库 (company_data.db)。
-    输入必须是合法的 SQLite SQL 查询语句。
-    执行后会返回查询结果。
-    """
+    """查询公司企业数据库"""
     try:
         conn = sqlite3.connect('company_data.db')
         c = conn.cursor()
@@ -222,58 +219,54 @@ def run_sql_query(sql: str) -> str:
         rows = c.fetchall()
         columns = [description[0] for description in c.description] if c.description else []
         conn.close()
-        
-        if not rows:
-            return "查询成功，但结果为空。"
-            
-        res = f"列名: {columns}\n数据 (最多展示前50行):\n"
-        for row in rows[:50]:
-            res += str(row) + "\n"
+        if not rows: return "查询成功，但结果为空。"
+        res = f"列名: {columns}\n数据 (前50行):\n"
+        for row in rows[:50]: res += str(row) + "\n"
         return res
     except Exception as e:
         return f"SQL执行出错: {str(e)}"
 
 @tool
 def fetch_web_content(url: str) -> str:
-    """
-    用于抓取和阅读指定网页的完整文本内容。
-    当你通过搜索发现了一个感兴趣的链接，或者用户直接给你一个 URL 让你总结、提取数据时，必须调用此工具。
-    输入必须是一个合法的 http 或 https 链接。
-    """
+    """抓取和阅读网页完整文本"""
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
+        headers = {'User-Agent': 'Mozilla/5.0'}
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        
         soup = BeautifulSoup(response.text, 'html.parser')
-        
-        for script in soup(["script", "style", "nav", "footer", "header"]):
-            script.extract()
-            
+        for script in soup(["script", "style", "nav", "footer", "header"]): script.extract()
         text = soup.get_text(separator='\n')
-        
         lines = (line.strip() for line in text.splitlines())
-        chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
-        text = '\n'.join(chunk for chunk in chunks if chunk)
-        
-        if len(text) > 10000:
-            return text[:10000] + "\n\n...(文章过长，已截断)..."
-        return text
+        text = '\n'.join(chunk for line in lines for chunk in line.split("  ") if chunk)
+        return text[:10000] + "\n\n...(截断)..." if len(text) > 10000 else text
     except Exception as e:
         return f"抓取网页失败: {str(e)}"
 
 # ==========================================
-# 侧边栏 UI
+# 弹窗与极简侧边栏 UI
 # ==========================================
+@st.dialog("📎 上传文件至知识库")
+def upload_file_modal():
+    st.markdown("将 PDF、TXT 或 CSV 文件拖拽到下方即可。AI 会自动挂载并记住文件内容。")
+    file = st.file_uploader(" ", type=["pdf", "txt", "csv"], label_visibility="collapsed")
+    if file is not None:
+        with st.spinner("正在安全保存..."):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file.name.split('.')[-1]}") as tmp_file:
+                tmp_file.write(file.getvalue())
+                st.session_state.current_file_path = tmp_file.name
+                st.session_state.current_file_name = file.name
+        st.success(f"✅ {file.name} 已挂载！关闭弹窗即可向我提问。")
+        if st.button("完 成", type="primary", use_container_width=True):
+            st.rerun()
+
 with st.sidebar:
-    st.header("💬 对话管理")
+    st.markdown("### 🤖 控制台")
+    
     if st.button("➕ 新建对话", use_container_width=True, type="primary"):
         st.session_state.current_session_id = create_new_session()
         st.rerun()
         
-    st.markdown("**历史对话列表：**")
+    st.caption("📝 历史记录")
     sessions = get_all_sessions()
     for s_id, title in sessions:
         col1, col2 = st.columns([5, 1])
@@ -283,27 +276,31 @@ with st.sidebar:
                 st.session_state.current_session_id = s_id
                 st.rerun()
         with col2:
-            if st.button("🗑️", key=f"del_{s_id}", help="删除此对话"):
+            if st.button("🗑️", key=f"del_{s_id}"):
                 delete_session(s_id)
                 if st.session_state.current_session_id == s_id:
                     rem_sessions = get_all_sessions()
                     st.session_state.current_session_id = rem_sessions[0][0] if rem_sessions else create_new_session()
                 st.rerun()
 
-    st.divider()
+    st.markdown("---")
+    st.caption("🛠️ 工具箱")
     
-    st.header("📂 喂给 AI 本地知识")
-    uploaded_file = st.file_uploader("上传 PDF / TXT / CSV 文件", type=["pdf", "txt", "csv"])
-    
-    st.divider()
-    st.header("⚙️ 助手设置")
-    if st.button("🧹 清空当前对话记忆", use_container_width=True):
+    # 极简的弹窗按钮
+    if st.button("📎 上传私有文件", use_container_width=True):
+        upload_file_modal()
+        
+    if st.button("🧹 清空当前记忆", use_container_width=True):
         clear_session_messages(st.session_state.current_session_id)
-        st.success("当前记忆已清空！")
+        st.toast("🧹 记忆已清空！")  # 使用轻量级的吐司提示，不占位置
         st.rerun()
 
+    # 如果有文件挂载，优雅地显示在最下面
+    if "current_file_name" in st.session_state and st.session_state.current_file_name:
+        st.info(f"📄 当前挂载: \n**{st.session_state.current_file_name}**")
+
 # ==========================================
-# 初始化 Agent 和工具列表
+# 初始化 Agent 和工具列表 (RAG 逻辑)
 # ==========================================
 tools = [
     TavilySearchResults(max_results=3, description="用于搜索互联网上的实时信息。"),
@@ -312,18 +309,14 @@ tools = [
     fetch_web_content
 ]
 
-# RAG 及文件处理
-if uploaded_file is not None:
-    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
-        tmp_file.write(uploaded_file.getvalue())
-        tmp_path = tmp_file.name
-        st.session_state.current_file_path = tmp_path
-
-    if uploaded_file.name.endswith(".csv"):
-        st.success(f"✅ 数据表 {uploaded_file.name} 已加载，AI 可以直接读取作图了！")
-    else:
-        with st.spinner("正在启动高级 RAG 引擎解析文件..."):
-            if uploaded_file.name.endswith(".pdf"):
+# RAG 解析逻辑转移到后台静默运行
+if "current_file_path" in st.session_state and st.session_state.current_file_path:
+    tmp_path = st.session_state.current_file_path
+    fname = st.session_state.current_file_name
+    
+    if not fname.endswith(".csv"):
+        with st.spinner("正在后台构建文件神经索..."):
+            if fname.endswith(".pdf"):
                 loader = PyPDFLoader(tmp_path)
             else:
                 loader = TextLoader(tmp_path, encoding="utf-8")
@@ -340,7 +333,6 @@ if uploaded_file is not None:
             advanced_retriever = MultiQueryRetriever.from_llm(retriever=base_retriever, llm=llm)
             retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "用于搜索用户文档的内容。")
             tools.append(retriever_tool)
-            st.success(f"✅ 文件 {uploaded_file.name} 已加载！")
 
 # 全面升级版提示词
 system_prompt_text = """你是一个顶级的数据分析师与全能 AI 助手。你拥有强大的 Python 代码执行能力和网络爬虫能力！
@@ -355,8 +347,6 @@ system_prompt_text = """你是一个顶级的数据分析师与全能 AI 助手�
 你可以使用 `run_sql_query` 查询公司数据库 (company_data.db)。
 1. employees 表：id, name(姓名), department(部门), salary(薪资), join_date(入职日期)
 2. product_sales 表：id, product_name(产品名), category(类别), revenue(营收), units_sold(销量)
-
-💡 工作流：如果用户想看数据库的数据图表，先用 `run_sql_query` 查出具体数据，然后把数据写入 `run_python_code` 生成 DataFrame 并用 plotly 画出来！
 
 【核心技能 3：深度网络爬虫】
 如果用户给你一个具体的 URL 链接，或者你需要深入了解某个搜索结果的详细内容，请立刻调用 `fetch_web_content` 工具去抓取全文，然后再回答用户！"""
@@ -377,7 +367,7 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # ==========================================
 # 主界面对话与图表渲染区
 # ==========================================
-st.title("🤖 满血版企业级 AI (支持爬虫与全功能)")
+st.title("🤖 极简企业级 AI 助理")
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
@@ -387,10 +377,8 @@ for msg in st.session_state.messages:
         if msg["role"] == "assistant":
             chart_paths = re.findall(r'\[CHART_PATH:(.*?)\]', content)
             clean_content = re.sub(r'\[CHART_PATH:.*?\]', '', content).strip()
-            
             if clean_content:
                 st.markdown(clean_content)
-                
             for cpath in chart_paths:
                 if os.path.exists(cpath):
                     try:
@@ -401,7 +389,7 @@ for msg in st.session_state.messages:
         else:
             st.markdown(content)
 
-if user_input := st.chat_input("上传CSV作图、查数据库、或者丢个网址让我抓取文章！"):
+if user_input := st.chat_input("您可以查数据库、搜索网页、或点击左侧 📎 上传文件让我分析！"):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
