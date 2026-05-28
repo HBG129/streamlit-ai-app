@@ -11,3 +11,5 @@ pandas
 matplotlib
 plotly
 SQLAlchemy==2.0.25
+requests
+beautifulsoup4
