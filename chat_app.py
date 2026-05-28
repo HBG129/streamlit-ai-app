@@ -28,25 +28,23 @@ from langchain.retrievers.multi_query import MultiQueryRetriever
 # ==========================================
 # 页面基础设置与 UI 美化 (极简 CSS)
 # ==========================================
-st.set_page_config(page_title="全能 AI 助手", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="极简 AI", page_icon="🤖", layout="wide")
 
+# 修复了之前导致侧边栏无法弹出的 BUG，只保留按钮动效和底部隐藏
 st.markdown("""
 <style>
-    /* 隐藏 Streamlit 默认的头部和底部 */
-    header {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* 按钮全局圆角与悬浮动效 */
+    /* 按钮全局圆角与悬浮微动效 */
     .stButton>button {
-        border-radius: 8px;
+        border-radius: 10px;
         transition: all 0.2s ease-in-out;
+        font-size: 18px; /* 让图标稍微大一点 */
     }
     .stButton>button:hover {
-        transform: scale(1.02);
+        transform: scale(1.05);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.1);
     }
-    
-    /* 侧边栏元素间距微调，使其更紧凑 */
-    [data-testid="stSidebarNav"] {display: none;}
 </style>
 """, unsafe_allow_html=True)
 
@@ -243,61 +241,71 @@ def fetch_web_content(url: str) -> str:
         return f"抓取网页失败: {str(e)}"
 
 # ==========================================
-# 弹窗与极简侧边栏 UI
+# 弹窗模块
 # ==========================================
-@st.dialog("📎 上传文件至知识库")
+@st.dialog("上传私有文件 📎")
 def upload_file_modal():
-    st.markdown("将 PDF、TXT 或 CSV 文件拖拽到下方即可。AI 会自动挂载并记住文件内容。")
-    file = st.file_uploader(" ", type=["pdf", "txt", "csv"], label_visibility="collapsed")
+    file = st.file_uploader("支持 PDF / TXT / CSV", type=["pdf", "txt", "csv"], label_visibility="collapsed")
     if file is not None:
-        with st.spinner("正在安全保存..."):
+        with st.spinner("处理中..."):
             with tempfile.NamedTemporaryFile(delete=False, suffix=f".{file.name.split('.')[-1]}") as tmp_file:
                 tmp_file.write(file.getvalue())
                 st.session_state.current_file_path = tmp_file.name
                 st.session_state.current_file_name = file.name
-        st.success(f"✅ {file.name} 已挂载！关闭弹窗即可向我提问。")
+        st.success(f"✅ 挂载成功！")
         if st.button("完 成", type="primary", use_container_width=True):
             st.rerun()
 
+# ==========================================
+# 极简纯图标侧边栏 (Toolbar 风格)
+# ==========================================
 with st.sidebar:
-    st.markdown("### 🤖 控制台")
+    # 使用 4 个纯图标按钮排成一行，充当工具栏
+    col1, col2, col3, col4 = st.columns(4)
     
-    if st.button("➕ 新建对话", use_container_width=True, type="primary"):
-        st.session_state.current_session_id = create_new_session()
-        st.rerun()
-        
-    st.caption("📝 历史记录")
-    sessions = get_all_sessions()
-    for s_id, title in sessions:
-        col1, col2 = st.columns([5, 1])
-        with col1:
-            btn_label = f"🟢 {title}" if s_id == st.session_state.current_session_id else f"💬 {title}"
-            if st.button(btn_label, key=f"btn_{s_id}", use_container_width=True):
-                st.session_state.current_session_id = s_id
-                st.rerun()
-        with col2:
-            if st.button("🗑️", key=f"del_{s_id}"):
-                delete_session(s_id)
-                if st.session_state.current_session_id == s_id:
-                    rem_sessions = get_all_sessions()
-                    st.session_state.current_session_id = rem_sessions[0][0] if rem_sessions else create_new_session()
-                st.rerun()
+    with col1:
+        if st.button("➕", help="新建对话", use_container_width=True):
+            st.session_state.current_session_id = create_new_session()
+            st.rerun()
+            
+    with col2:
+        # 三条杠历史记录，点击弹出菜单
+        with st.popover("☰", help="历史记录", use_container_width=True):
+            st.markdown("##### 历史记录")
+            sessions = get_all_sessions()
+            for s_id, title in sessions:
+                c1, c2 = st.columns([5, 1])
+                with c1:
+                    btn_label = f"🟢 {title}" if s_id == st.session_state.current_session_id else f"💬 {title}"
+                    if st.button(btn_label, key=f"btn_{s_id}", use_container_width=True):
+                        st.session_state.current_session_id = s_id
+                        st.rerun()
+                with c2:
+                    if st.button("🗑️", key=f"del_{s_id}"):
+                        delete_session(s_id)
+                        if st.session_state.current_session_id == s_id:
+                            rem_sessions = get_all_sessions()
+                            st.session_state.current_session_id = rem_sessions[0][0] if rem_sessions else create_new_session()
+                        st.rerun()
+                        
+    with col3:
+        if st.button("", help="", use_container_width=True):
+            upload_file_modal()
+            
+    with col4:
+        if st.button("🧹", help="清空当前记忆", use_container_width=True):
+            clear_session_messages(st.session_state.current_session_id)
+            st.toast("🧹 当前对话记忆已清空")
+            st.rerun()
 
     st.markdown("---")
-    st.caption("🛠️ 工具箱")
-    
-    # 极简的弹窗按钮
-    if st.button("📎 上传私有文件", use_container_width=True):
-        upload_file_modal()
-        
-    if st.button("🧹 清空当前记忆", use_container_width=True):
-        clear_session_messages(st.session_state.current_session_id)
-        st.toast("🧹 记忆已清空！")  # 使用轻量级的吐司提示，不占位置
-        st.rerun()
 
-    # 如果有文件挂载，优雅地显示在最下面
+    # 显示当前会话信息和文件状态（非常隐蔽极简的提示）
+    current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
+    st.caption(f"当前: {current_title}")
+    
     if "current_file_name" in st.session_state and st.session_state.current_file_name:
-        st.info(f"📄 当前挂载: \n**{st.session_state.current_file_name}**")
+        st.info(f"📎 **{st.session_state.current_file_name}**")
 
 # ==========================================
 # 初始化 Agent 和工具列表 (RAG 逻辑)
@@ -309,13 +317,12 @@ tools = [
     fetch_web_content
 ]
 
-# RAG 解析逻辑转移到后台静默运行
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
     tmp_path = st.session_state.current_file_path
     fname = st.session_state.current_file_name
     
     if not fname.endswith(".csv"):
-        with st.spinner("正在后台构建文件神经索..."):
+        with st.spinner("知识库静默加载中..."):
             if fname.endswith(".pdf"):
                 loader = PyPDFLoader(tmp_path)
             else:
@@ -334,7 +341,6 @@ if "current_file_path" in st.session_state and st.session_state.current_file_pat
             retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "用于搜索用户文档的内容。")
             tools.append(retriever_tool)
 
-# 全面升级版提示词
 system_prompt_text = """你是一个顶级的数据分析师与全能 AI 助手。你拥有强大的 Python 代码执行能力和网络爬虫能力！
 
 【核心技能 1：分析文件与画图】
@@ -345,11 +351,9 @@ system_prompt_text = """你是一个顶级的数据分析师与全能 AI 助手�
 
 【核心技能 2：查询企业数据库】
 你可以使用 `run_sql_query` 查询公司数据库 (company_data.db)。
-1. employees 表：id, name(姓名), department(部门), salary(薪资), join_date(入职日期)
-2. product_sales 表：id, product_name(产品名), category(类别), revenue(营收), units_sold(销量)
 
 【核心技能 3：深度网络爬虫】
-如果用户给你一个具体的 URL 链接，或者你需要深入了解某个搜索结果的详细内容，请立刻调用 `fetch_web_content` 工具去抓取全文，然后再回答用户！"""
+如果用户给你一个具体的 URL 链接，或者你需要深入了解某个搜索结果的详细内容，请立刻调用 `fetch_web_content` 工具去抓取全文！"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
     system_prompt_text += f"\n\n[机密指令] 用户刚刚上传了文件，文件绝对路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格，请直接用 pandas.read_csv 读取该路径并画图！"
@@ -367,7 +371,7 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # ==========================================
 # 主界面对话与图表渲染区
 # ==========================================
-st.title("🤖 极简企业级 AI 助理")
+st.title("🤖 DataAgent")
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
@@ -389,7 +393,7 @@ for msg in st.session_state.messages:
         else:
             st.markdown(content)
 
-if user_input := st.chat_input("您可以查数据库、搜索网页、或点击左侧 📎 上传文件让我分析！"):
+if user_input := st.chat_input("输入问题，或点击左侧工具栏..."):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
