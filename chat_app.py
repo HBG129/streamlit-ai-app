@@ -8,11 +8,12 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain.tools.retriever import create_retriever_tool
 from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-# 新增了 CSVLoader
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoader
+# 【新增】专门用于拦截流式输出并展示在 Streamlit 上的神器组件
+from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 
 st.set_page_config(page_title="全能 AI 助手", page_icon="🤖", layout="wide")
-st.title("🤖 满血版 AI 助手 (网搜 + 文档 + 表格 + 导出)")
+st.title("🤖 满血版 AI 助手 (网搜 + 文档 + 导出 + 流式打字)")
 
 try:
     os.environ["OPENAI_API_KEY"] = st.secrets["ZHIPU_API_KEY"]
@@ -22,11 +23,11 @@ except KeyError as e:
     st.error(f"⚠️ 缺少 API Key: {e}。请检查 Secrets 配置！")
     st.stop()
 
-llm = ChatOpenAI(model="glm-4-flash", temperature=0.5)
+# 【关键改动1】在这里加上 streaming=True，告诉大模型：别憋着，有字就赶紧吐出来！
+llm = ChatOpenAI(model="glm-4-flash", temperature=0.5, streaming=True)
 
 with st.sidebar:
     st.header("📂 喂给 AI 本地知识")
-    # 这里增加了 csv 格式支持
     uploaded_file = st.file_uploader("上传 PDF / TXT / CSV 文件", type=["pdf", "txt", "csv"])
     
     st.divider()
@@ -35,7 +36,6 @@ with st.sidebar:
         st.session_state.messages = []
         st.success("记忆已清空！")
         
-    # 新增的导出功能，只有在有聊天记录时才显示
     if "messages" in st.session_state and len(st.session_state.messages) > 0:
         chat_text = "\n\n".join([f"{msg['role'].upper()}:\n{msg['content']}" for msg in st.session_state.messages])
         st.download_button(
@@ -60,7 +60,6 @@ if uploaded_file is not None:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
 
-        # 根据后缀名自动选择对应的加载器
         if uploaded_file.name.endswith(".pdf"):
             loader = PyPDFLoader(tmp_path)
         elif uploaded_file.name.endswith(".csv"):
@@ -112,15 +111,16 @@ if user_input := st.chat_input("问我天气，或者传个文档/表格问我�
     ]
 
     with st.chat_message("assistant"):
-        with st.spinner("🚀 正在思考..."):
-            try:
-                response = agent_executor.invoke({
-                    "input": user_input,
-                    "chat_history": chat_history
-                })
-                answer = response["output"]
-                st.markdown(answer)
-                st.session_state.messages.append({"role": "assistant", "content": answer})
-                st.rerun() # 刷新页面以更新左侧的下载按钮数据
-            except Exception as e:
-                st.error(f"发生错误: {e}")
+        # 【关键改动2】去掉了干巴巴的 spinner，换上了高大上的回调拦截器
+        st_callback = StreamlitCallbackHandler(st.container())
+        try:
+            # 【关键改动3】在 invoke 的时候，把拦截器塞进去，接管页面的实时渲染
+            response = agent_executor.invoke(
+                {"input": user_input, "chat_history": chat_history},
+                {"callbacks": [st_callback]}
+            )
+            answer = response["output"]
+            st.session_state.messages.append({"role": "assistant", "content": answer})
+            st.rerun() 
+        except Exception as e:
+            st.error(f"发生错误: {e}")
