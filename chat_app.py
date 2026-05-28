@@ -97,15 +97,23 @@ if "current_session_id" not in st.session_state:
     else:
         st.session_state.current_session_id = create_new_session()
 
+# 验证所有必须的 API Key
 try:
-    os.environ["OPENAI_API_KEY"] = st.secrets["ZHIPU_API_KEY"]
-    os.environ["OPENAI_API_BASE"] = "https://open.bigmodel.cn/api/paas/v4/"
+    _ = st.secrets["DEEPSEEK_API_KEY"]
+    _ = st.secrets["ZHIPU_API_KEY"]
     os.environ["TAVILY_API_KEY"] = st.secrets["TAVILY_API_KEY"]
 except KeyError as e:
     st.error(f"⚠️ 缺少 API Key: {e}。请检查 Secrets 配置！")
     st.stop()
 
-llm = ChatOpenAI(model="glm-4-flash", temperature=0.5, streaming=True)
+# 核心大脑：DeepSeek 专属配置（不污染全局环境变量）
+llm = ChatOpenAI(
+    model="deepseek-chat", 
+    api_key=st.secrets["DEEPSEEK_API_KEY"], 
+    base_url="https://api.deepseek.com", 
+    temperature=0.2, 
+    streaming=True
+)
 
 @tool
 def run_python_code(code: str) -> str:
@@ -115,13 +123,12 @@ def run_python_code(code: str) -> str:
     1. 如果有计算结果，务必使用 print() 打印，工具会捕获并返回。
     2. 如果用户要求画图（如折线图、柱状图、饼图等），必须使用此工具！
     3. 【非常重要】你的执行环境里已经内置了 st (Streamlit)、pd (pandas) 和 px (plotly.express)。
-       - 请优先使用 px (plotly) 画图，因为它在网页上最美观且没有中文字体报错。
+       - 请优先使用 px (plotly) 画图。
        - 画完后必须调用 `st.plotly_chart(fig)` 将图表渲染到前端！
     """
     old_stdout = sys.stdout
     redirected_output = sys.stdout = io.StringIO()
     try:
-        # 【修改点】强行把 plotly.express 塞进去，并命名为 px
         global_env = {
             "st": st, 
             "pd": __import__('pandas'),
@@ -197,7 +204,13 @@ if uploaded_file is not None:
             docs = loader.load()
             text_splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
             splits = text_splitter.split_documents(docs)
-            embeddings = OpenAIEmbeddings(model="embedding-3") 
+            
+            # 向量化工具：继续使用智谱（避免 DeepSeek 缺失 embedding 接口报错）
+            embeddings = OpenAIEmbeddings(
+                model="embedding-3",
+                api_key=st.secrets["ZHIPU_API_KEY"],
+                base_url="https://open.bigmodel.cn/api/paas/v4/"
+            ) 
             vectorstore = FAISS.from_documents(splits, embeddings)
             
             base_retriever = vectorstore.as_retriever()
@@ -210,11 +223,10 @@ if uploaded_file is not None:
             tools.append(retriever_tool)
             st.success(f"✅ 文件 {uploaded_file.name} 已加载，并已开启多路并发检索！")
 
-# 【修改点】用最严厉的语气约束大模型
 system_prompt_text = """你是一个企业级全能 AI 助手。
 【极其重要的铁律】：
 只要用户提到“画图”、“柱状图”、“折线图”、“可视化”等词汇，你**绝对不可以**只用文字回答“画好了”。
-你必须、立刻、强制调用 `run_python_code` 工具来执行代码画图！如果你不调用工具，用户将什么都看不到！
+你必须、立刻、强制调用 `run_python_code` 工具来执行代码画图！
 画图时，直接使用内置的 px (plotly.express) 并在代码最后一行写 `st.plotly_chart(fig)`。"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
