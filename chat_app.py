@@ -113,15 +113,20 @@ def run_python_code(code: str) -> str:
     运行 Python 代码进行复杂的数据分析、统计计算或绘制动态图表。
     输入必须是一段合法的 Python 脚本。
     1. 如果有计算结果，务必使用 print() 打印，工具会捕获并返回。
-    2. 如果用户要求画图（如折线图、柱状图、饼图等），你可以使用 matplotlib.pyplot 或 plotly。
-    3. 【非常重要】你的执行环境里已经内置了 st (Streamlit) 和 pd (pandas)。
-       - 如果你用 matplotlib 画图，画完后必须调用 `st.pyplot(plt.gcf())` 将图表渲染到前端。
-       - 如果你用 plotly 画图，画完后必须调用 `st.plotly_chart(fig)`。
+    2. 如果用户要求画图（如折线图、柱状图、饼图等），必须使用此工具！
+    3. 【非常重要】你的执行环境里已经内置了 st (Streamlit)、pd (pandas) 和 px (plotly.express)。
+       - 请优先使用 px (plotly) 画图，因为它在网页上最美观且没有中文字体报错。
+       - 画完后必须调用 `st.plotly_chart(fig)` 将图表渲染到前端！
     """
     old_stdout = sys.stdout
     redirected_output = sys.stdout = io.StringIO()
     try:
-        global_env = {"st": st, "pd": __import__('pandas')}
+        # 【修改点】强行把 plotly.express 塞进去，并命名为 px
+        global_env = {
+            "st": st, 
+            "pd": __import__('pandas'),
+            "px": __import__('plotly.express')
+        }
         exec(code, global_env)
         sys.stdout = old_stdout
         return redirected_output.getvalue() + "\n（代码执行成功，如果有图表已经渲染在了页面上）"
@@ -174,7 +179,6 @@ tools = [
     run_python_code
 ]
 
-# 【核心修改：CSV文件绕过向量化，直达Python数据分析】
 if uploaded_file is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
         tmp_file.write(uploaded_file.getvalue())
@@ -182,7 +186,7 @@ if uploaded_file is not None:
         st.session_state.current_file_path = tmp_path
 
     if uploaded_file.name.endswith(".csv"):
-        st.success(f"✅ 数据表 {uploaded_file.name} 已加载！（自动切换至代码直读模式，拒绝浪费 API 额度）")
+        st.success(f"✅ 数据表 {uploaded_file.name} 已加载！(已开启代码直读模式)")
     else:
         with st.spinner("正在启动高级 RAG 引擎解析文件..."):
             if uploaded_file.name.endswith(".pdf"):
@@ -206,14 +210,15 @@ if uploaded_file is not None:
             tools.append(retriever_tool)
             st.success(f"✅ 文件 {uploaded_file.name} 已加载，并已开启多路并发检索！")
 
-system_prompt_text = """你是一个企业级全能 AI 助手，拥有多种工具：
-1. 遇到不知道的实时信息，必须使用 search_tool。
-2. 遇到关于长文档的文本内容问答，使用 document_search。
-3. 如果用户要求进行复杂计算、数据统计、或深度分析数据，你必须编写 Python 代码并使用 run_python_code 工具。
-   【画图指令】：如果用户要求绘制图表，请直接在 python 代码里使用 matplotlib 或 plotly，并调用 st.pyplot(plt.gcf()) 或 st.plotly_chart(fig) 将其画出！画图时务必配置好中文字体以防乱码（如 plt.rcParams['font.sans-serif'] = ['SimHei']）。"""
+# 【修改点】用最严厉的语气约束大模型
+system_prompt_text = """你是一个企业级全能 AI 助手。
+【极其重要的铁律】：
+只要用户提到“画图”、“柱状图”、“折线图”、“可视化”等词汇，你**绝对不可以**只用文字回答“画好了”。
+你必须、立刻、强制调用 `run_python_code` 工具来执行代码画图！如果你不调用工具，用户将什么都看不到！
+画图时，直接使用内置的 px (plotly.express) 并在代码最后一行写 `st.plotly_chart(fig)`。"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
-    system_prompt_text += f"\n\n[核心机密] 用户最新上传了本地文件，物理路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格，你可以在 python 代码里直接使用 pd.read_csv 读取它进行统计和画图！"
+    system_prompt_text += f"\n\n[核心机密] 用户最新上传了本地文件，路径为: '{st.session_state.current_file_path}'。你可以直接在 run_python_code 里写 `df = pd.read_csv('{st.session_state.current_file_path}')` 读取它并画图！"
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt_text),
