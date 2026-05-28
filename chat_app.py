@@ -18,10 +18,9 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoader
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
-# 【新增】高级 RAG 核心组件：多路查询重写器
 from langchain.retrievers.multi_query import MultiQueryRetriever
 
-# 开启日志，这样你能在控制台看到大模型是怎么重写问题的，满满的高级感
+# 开启日志
 logging.basicConfig()
 logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
 
@@ -108,19 +107,28 @@ except KeyError as e:
 
 llm = ChatOpenAI(model="glm-4-flash", temperature=0.5, streaming=True)
 
+# ==========================================
+# 【新增功能 1：图表可视化专家】
+# ==========================================
 @tool
 def run_python_code(code: str) -> str:
     """
-    运行 Python 代码进行复杂的数据分析、统计或数学计算。
+    运行 Python 代码进行复杂的数据分析、统计计算或绘制动态图表。
     输入必须是一段合法的 Python 脚本。
-    如果有计算结果需要知道，请务必在代码里使用 print() 打印出来，工具会捕获并返回 print 的内容。
+    1. 如果有计算结果，务必使用 print() 打印，工具会捕获并返回。
+    2. 如果用户要求画图（如折线图、柱状图、饼图等），你可以使用 matplotlib.pyplot 或 plotly。
+    3. 【非常重要】你的执行环境里已经内置了 st (Streamlit)。
+       - 如果你用 matplotlib 画图，画完后必须调用 `st.pyplot(plt.gcf())` 将图表渲染到前端。
+       - 如果你用 plotly 画图，画完后必须调用 `st.plotly_chart(fig)`。
     """
     old_stdout = sys.stdout
     redirected_output = sys.stdout = io.StringIO()
     try:
-        exec(code, {})
+        # 将 Streamlit 的 st 对象偷偷注入到执行环境中，让大模型能直接控制界面画图
+        global_env = {"st": st, "pd": __import__('pandas')}
+        exec(code, global_env)
         sys.stdout = old_stdout
-        return redirected_output.getvalue()
+        return redirected_output.getvalue() + "\n（代码执行成功，如果有图表已经渲染在了页面上）"
     except Exception as e:
         sys.stdout = old_stdout
         return f"代码执行出错: {str(e)}"
@@ -190,7 +198,6 @@ if uploaded_file is not None:
         embeddings = OpenAIEmbeddings(model="embedding-3") 
         vectorstore = FAISS.from_documents(splits, embeddings)
         
-        # 【进阶改动】基础检索器升级为多路查询高级检索器
         base_retriever = vectorstore.as_retriever()
         advanced_retriever = MultiQueryRetriever.from_llm(
             retriever=base_retriever, 
@@ -204,10 +211,11 @@ if uploaded_file is not None:
 system_prompt_text = """你是一个企业级全能 AI 助手，拥有多种工具：
 1. 遇到不知道的实时信息，必须使用 search_tool。
 2. 遇到关于长文档的文本内容问答，使用 document_search。
-3. 如果用户要求进行复杂计算、数据统计、或深度分析数据，你必须编写 Python 代码并使用 run_python_code 工具执行分析（记得用 print 输出你要查看的结果）。"""
+3. 如果用户要求进行复杂计算、数据统计、或深度分析数据，你必须编写 Python 代码并使用 run_python_code 工具。
+   【画图指令】：如果用户要求绘制图表（折线图、柱状图等），请直接在 python 代码里使用 plt 或 plotly，并调用 st.pyplot(plt.gcf()) 将其画出！"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
-    system_prompt_text += f"\n\n[核心机密] 用户最新上传了本地文件，物理路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格分析，你可以直接在这个工具的 Python 代码里 import pandas 读取它进行统计！"
+    system_prompt_text += f"\n\n[核心机密] 用户最新上传了本地文件，物理路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格，你可以在 python 代码里直接读取并用来画图！"
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt_text),
@@ -227,7 +235,7 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if user_input := st.chat_input("传个文档，故意用同义词考考我的高级检索能力！"):
+if user_input := st.chat_input("传个文档，或者直接让我画个数据分析图表！"):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
