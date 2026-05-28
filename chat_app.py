@@ -30,7 +30,6 @@ from langchain.retrievers.multi_query import MultiQueryRetriever
 # ==========================================
 st.set_page_config(page_title="极简 AI", page_icon="🤖", layout="wide")
 
-# 修复了之前导致侧边栏无法弹出的 BUG，只保留按钮动效和底部隐藏
 st.markdown("""
 <style>
     footer {visibility: hidden;}
@@ -289,7 +288,8 @@ with st.sidebar:
                         st.rerun()
                         
     with col3:
-        if st.button("", help="", use_container_width=True):
+        # 修复了这里的乱码问题！使用了文件夹📁图标
+        if st.button("📁", help="上传文件", use_container_width=True):
             upload_file_modal()
             
     with col4:
@@ -300,12 +300,12 @@ with st.sidebar:
 
     st.markdown("---")
 
-    # 显示当前会话信息和文件状态（非常隐蔽极简的提示）
+    # 显示当前会话信息和文件状态
     current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
     st.caption(f"当前: {current_title}")
     
     if "current_file_name" in st.session_state and st.session_state.current_file_name:
-        st.info(f"📎 **{st.session_state.current_file_name}**")
+        st.info(f"📁 **{st.session_state.current_file_name}**")
 
 # ==========================================
 # 初始化 Agent 和工具列表 (RAG 逻辑)
