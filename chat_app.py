@@ -34,15 +34,49 @@ st.markdown("""
 <style>
     footer {visibility: hidden;}
     
-    /* 按钮全局圆角与悬浮微动效 */
+    /* 工具栏按钮全局圆角与悬浮微动效 */
     .stButton>button {
         border-radius: 10px;
         transition: all 0.2s ease-in-out;
-        font-size: 18px; /* 让图标稍微大一点 */
+        font-size: 18px; 
     }
     .stButton>button:hover {
         transform: scale(1.05);
         box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+    }
+    
+    /* 【核心魔法：微信级左右对话布局】 */
+    /* 识别包含 user-msg 标记的消息框，将其反向排列（头像在右） */
+    div[data-testid="stChatMessage"]:has(.user-msg) {
+        flex-direction: row-reverse;
+    }
+    /* 调整右侧头像的左右间距 */
+    div[data-testid="stChatMessage"]:has(.user-msg) > div:first-child {
+        margin-left: 1rem;
+        margin-right: 0;
+    }
+    /* 让用户消息的内容块靠右对齐 */
+    div[data-testid="stChatMessage"]:has(.user-msg) > div:nth-child(2) {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-end;
+        text-align: right;
+    }
+    
+    /* 【分层设计】顶部标题的样式 */
+    .chat-header {
+        text-align: center;
+        font-size: 1.5rem;
+        font-weight: bold;
+        color: #333;
+        padding-bottom: 15px;
+        margin-bottom: 20px;
+        border-bottom: 1px solid #eaeaea; /* 分层隔离线 */
+    }
+    
+    /* 适配暗黑模式的标题颜色 */
+    @media (prefers-color-scheme: dark) {
+        .chat-header { color: #f0f0f0; border-bottom: 1px solid #444; }
     }
 </style>
 """, unsafe_allow_html=True)
@@ -55,7 +89,7 @@ if not os.path.exists("saved_charts"):
     os.makedirs("saved_charts")
 
 # ==========================================
-# 数据库管理区
+# 数据库与会话管理
 # ==========================================
 def init_chat_db():
     conn = sqlite3.connect('chat_history.db')
@@ -256,19 +290,16 @@ def upload_file_modal():
             st.rerun()
 
 # ==========================================
-# 极简纯图标侧边栏 (Toolbar 风格)
+# 极简侧边栏工具条 (仅保留操作和文件提示)
 # ==========================================
 with st.sidebar:
-    # 使用 4 个纯图标按钮排成一行，充当工具栏
     col1, col2, col3, col4 = st.columns(4)
-    
     with col1:
         if st.button("➕", help="新建对话", use_container_width=True):
             st.session_state.current_session_id = create_new_session()
             st.rerun()
             
     with col2:
-        # 三条杠历史记录，点击弹出菜单
         with st.popover("☰", help="历史记录", use_container_width=True):
             st.markdown("##### 历史记录")
             sessions = get_all_sessions()
@@ -288,7 +319,6 @@ with st.sidebar:
                         st.rerun()
                         
     with col3:
-        # 修复了这里的乱码问题！使用了文件夹📁图标
         if st.button("📁", help="上传文件", use_container_width=True):
             upload_file_modal()
             
@@ -297,13 +327,8 @@ with st.sidebar:
             clear_session_messages(st.session_state.current_session_id)
             st.toast("🧹 当前对话记忆已清空")
             st.rerun()
-
+            
     st.markdown("---")
-
-    # 显示当前会话信息和文件状态
-    current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
-    st.caption(f"当前: {current_title}")
-    
     if "current_file_name" in st.session_state and st.session_state.current_file_name:
         st.info(f"📁 **{st.session_state.current_file_name}**")
 
@@ -371,12 +396,19 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # ==========================================
 # 主界面对话与图表渲染区
 # ==========================================
-st.title("🤖 DataAgent")
+# 顶部渲染当前的对话标题与分层横线
+current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
+st.markdown(f"<div class='chat-header'>💬 {current_title}</div>", unsafe_allow_html=True)
 
+# 渲染历史消息
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
+        # 【重要】如果是用户发言，悄悄注入一个 user-msg 的隐形 span 触发 CSS 翻转
+        if msg["role"] == "user":
+            st.markdown("<span class='user-msg'></span>", unsafe_allow_html=True)
+            
         content = msg["content"]
         if msg["role"] == "assistant":
             chart_paths = re.findall(r'\[CHART_PATH:(.*?)\]', content)
@@ -393,6 +425,7 @@ for msg in st.session_state.messages:
         else:
             st.markdown(content)
 
+# 输入与生成逻辑
 if user_input := st.chat_input("输入问题，或点击左侧工具栏..."):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
@@ -400,6 +433,8 @@ if user_input := st.chat_input("输入问题，或点击左侧工具栏..."):
 
     save_message(st.session_state.current_session_id, "user", user_input)
     with st.chat_message("user"):
+        # 用户新发言同样注入 span
+        st.markdown("<span class='user-msg'></span>", unsafe_allow_html=True)
         st.markdown(user_input)
 
     chat_history = [
