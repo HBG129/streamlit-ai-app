@@ -3,10 +3,18 @@ import os
 import tempfile
 import sqlite3
 import uuid
-from datetime import datetime
 import sys
 import io
 import logging
+import base64
+import requests
+from bs4 import BeautifulSoup
+from datetime import datetime
+
+# 必须设置为非交互式后端，防止网页服务器画图时崩溃
+import matplotlib
+matplotlib.use('Agg') 
+import matplotlib.pyplot as plt
 
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain.agents import AgentExecutor, create_tool_calling_agent
@@ -18,15 +26,24 @@ from langchain_community.vectorstores import FAISS
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, CSVLoader
 from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
-# 【新增】高级 RAG 核心组件：多路查询重写器
+
+# RAG 高级组件
 from langchain.retrievers.multi_query import MultiQueryRetriever
+from langchain.retrievers import ContextualCompressionRetriever
+from langchain.retrievers.document_compressors import LLMChainExtractor
 
-# 开启日志，这样你能在控制台看到大模型是怎么重写问题的，满满的高级感
+# 数据库组件
+from langchain_community.utilities import SQLDatabase
+from langchain_community.tools.sql_database.tool import QuerySQLDataBaseTool
+
 logging.basicConfig()
-logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
+logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.WARNING)
 
-st.set_page_config(page_title="全能 AI 助手", page_icon="🤖", layout="wide")
+st.set_page_config(page_title="神级 AI 助手", page_icon="👑", layout="wide")
 
+# ==========================================
+# 0. 数据库初始化 (聊天记录 + 演示用企业数据库)
+# ==========================================
 def init_db():
     conn = sqlite3.connect('chat_history.db')
     c = conn.cursor()
@@ -34,6 +51,16 @@ def init_db():
     c.execute('''CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT, created_at DATETIME)''')
     conn.commit()
     conn.close()
+
+def init_demo_sqldb():
+    # 初始化一个假的“企业数据库”供 AI 练习 SQL 查询
+    if not os.path.exists("company_demo.db"):
+        conn = sqlite3.connect("company_demo.db")
+        c = conn.cursor()
+        c.execute("CREATE TABLE sales (id INTEGER, product TEXT, revenue INTEGER, region TEXT)")
+        c.execute("INSERT INTO sales VALUES (1, '超级手机', 50000, '北京'), (2, '游戏电脑', 80000, '上海'), (3, '办公平板', 30000, '北京')")
+        conn.commit()
+        conn.close()
 
 def create_new_session(title="新对话"):
     session_id = str(uuid.uuid4())
@@ -52,7 +79,7 @@ def get_all_sessions():
     conn.close()
     return rows
 
-def save_message(session_id, role, content):
+def save_message(session_id, role, content, image_path=None):
     conn = sqlite3.connect('chat_history.db')
     c = conn.cursor()
     c.execute("INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)", (session_id, role, content, datetime.now()))
@@ -90,6 +117,7 @@ def delete_session(session_id):
     conn.close()
 
 init_db()
+init_demo_sqldb()
 
 if "current_session_id" not in st.session_state:
     sessions = get_all_sessions()
@@ -98,40 +126,88 @@ if "current_session_id" not in st.session_state:
     else:
         st.session_state.current_session_id = create_new_session()
 
+# ==========================================
+# 1. API 配置与大模型
+# ==========================================
 try:
     os.environ["OPENAI_API_KEY"] = st.secrets["ZHIPU_API_KEY"]
     os.environ["OPENAI_API_BASE"] = "https://open.bigmodel.cn/api/paas/v4/"
     os.environ["TAVILY_API_KEY"] = st.secrets["TAVILY_API_KEY"]
 except KeyError as e:
-    st.error(f"⚠️ 缺少 API Key: {e}。请检查 Secrets 配置！")
+    st.error(f"⚠️ 缺少 API Key: {e}")
     st.stop()
 
+# 基础模型
 llm = ChatOpenAI(model="glm-4-flash", temperature=0.5, streaming=True)
+# 专门用于看图的视觉模型
+vision_llm = ChatOpenAI(model="glm-4v", temperature=0.1)
 
+# ==========================================
+# 2. 五大终极自定义工具
+# ==========================================
+
+# 【技能 1】数据分析与画图工具
 @tool
 def run_python_code(code: str) -> str:
     """
-    运行 Python 代码进行复杂的数据分析、统计或数学计算。
-    输入必须是一段合法的 Python 脚本。
-    如果有计算结果需要知道，请务必在代码里使用 print() 打印出来，工具会捕获并返回 print 的内容。
+    运行 Python 代码进行复杂的数据分析或画图。
+    如果你需要画图，请务必使用 matplotlib，并且必须将图片保存为当前目录下的 'temp_chart.png' 文件（不要使用 plt.show()）。
     """
     old_stdout = sys.stdout
     redirected_output = sys.stdout = io.StringIO()
     try:
-        exec(code, {})
+        exec(code, globals())
         sys.stdout = old_stdout
-        return redirected_output.getvalue()
+        return redirected_output.getvalue() + "\n(代码执行完毕)"
     except Exception as e:
         sys.stdout = old_stdout
         return f"代码执行出错: {str(e)}"
 
+# 【技能 2】网页爬虫工具
+@tool
+def scrape_webpage(url: str) -> str:
+    """输入网页链接(URL)，爬取并返回该网页的纯文本内容。"""
+    try:
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=10)
+        res.encoding = res.apparent_encoding
+        soup = BeautifulSoup(res.text, 'html.parser')
+        return soup.get_text(separator='\n', strip=True)[:3000] # 截取前3000字防爆
+    except Exception as e:
+        return f"爬取失败: {e}"
+
+# 【技能 3】视觉看图工具
+@tool
+def analyze_image(query: str) -> str:
+    """当你需要看用户上传的图片时调用此工具。传入你需要从图片中获取的信息或问题。"""
+    if "current_img_path" not in st.session_state or not st.session_state.current_img_path:
+        return "用户没有上传图片。"
+    try:
+        with open(st.session_state.current_img_path, "rb") as f:
+            img_b64 = base64.b64encode(f.read()).decode('utf-8')
+        msg = vision_llm.invoke([
+            {"role": "user", "content": [
+                {"type": "text", "text": query},
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}}
+            ]}
+        ])
+        return msg.content
+    except Exception as e:
+        return f"图片分析失败: {e}"
+
+# 【技能 4】企业数据库 SQL 直连工具
+db = SQLDatabase.from_uri("sqlite:///company_demo.db")
+sql_tool = QuerySQLDataBaseTool(db=db, description="用于查询公司内部数据库(company_demo.db)，包含 sales(销售) 表。输入必须是标准的 SQL 语句。")
+
+
+# ==========================================
+# 3. 侧边栏 UI
+# ==========================================
 with st.sidebar:
     st.header("💬 对话管理")
     if st.button("➕ 新建对话", use_container_width=True, type="primary"):
         st.session_state.current_session_id = create_new_session()
         st.rerun()
         
-    st.markdown("**历史对话列表：**")
     sessions = get_all_sessions()
     for s_id, title in sessions:
         col1, col2 = st.columns([5, 1])
@@ -141,37 +217,43 @@ with st.sidebar:
                 st.session_state.current_session_id = s_id
                 st.rerun()
         with col2:
-            if st.button("🗑️", key=f"del_{s_id}", help="删除此对话"):
+            if st.button("🗑️", key=f"del_{s_id}"):
                 delete_session(s_id)
                 if st.session_state.current_session_id == s_id:
-                    rem_sessions = get_all_sessions()
-                    st.session_state.current_session_id = rem_sessions[0][0] if rem_sessions else create_new_session()
+                    rem = get_all_sessions()
+                    st.session_state.current_session_id = rem[0][0] if rem else create_new_session()
                 st.rerun()
 
     st.divider()
     
-    st.header("📂 喂给 AI 本地知识")
-    uploaded_file = st.file_uploader("上传 PDF / TXT / CSV 文件", type=["pdf", "txt", "csv"])
+    st.header("📂 给 AI 喂料")
+    uploaded_file = st.file_uploader("上传文档/表格", type=["pdf", "txt", "csv"])
+    uploaded_img = st.file_uploader("上传图片", type=["jpg", "png", "jpeg"])
     
+    if uploaded_img:
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".jpg") as tmp_img:
+            tmp_img.write(uploaded_img.getvalue())
+            st.session_state.current_img_path = tmp_img.name
+            st.success("图片已就绪！")
+
     st.divider()
-    st.header("⚙️ 助手设置")
     if st.button("🧹 清空当前对话记忆", use_container_width=True):
         clear_session_messages(st.session_state.current_session_id)
-        st.success("当前记忆已清空！")
         st.rerun()
-        
-    current_msgs = get_messages(st.session_state.current_session_id)
-    if len(current_msgs) > 0:
-        chat_text = "\n\n".join([f"{msg['role'].upper()}:\n{msg['content']}" for msg in current_msgs])
-        st.download_button("💾 导出当前聊天记录", data=chat_text, file_name="聊天记录.txt", mime="text/plain", use_container_width=True)
 
+# ==========================================
+# 4. 构建终极工具箱 & RAG 重排序
+# ==========================================
 tools = [
-    TavilySearchResults(max_results=3, description="用于搜索互联网上的实时信息，如天气、新闻。如果问题涉及实时数据，必须使用此工具。"),
-    run_python_code
+    TavilySearchResults(max_results=2, description="搜索互联网实时信息"),
+    run_python_code,
+    scrape_webpage,
+    analyze_image,
+    sql_tool
 ]
 
 if uploaded_file is not None:
-    with st.spinner("正在启动高级 RAG 引擎解析文件..."):
+    with st.spinner("启动高级 RAG 与内容压缩重排序..."):
         with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
             tmp_file.write(uploaded_file.getvalue())
             tmp_path = tmp_file.name
@@ -190,27 +272,30 @@ if uploaded_file is not None:
         embeddings = OpenAIEmbeddings(model="embedding-3") 
         vectorstore = FAISS.from_documents(splits, embeddings)
         
-        # 【进阶改动】基础检索器升级为多路查询高级检索器
-        base_retriever = vectorstore.as_retriever()
-        advanced_retriever = MultiQueryRetriever.from_llm(
-            retriever=base_retriever, 
-            llm=llm
+        base_retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+        
+        # 【技能 5】终极 RAG：先多路召回，再用 LLM 压缩重排序提取最精准内容
+        mq_retriever = MultiQueryRetriever.from_llm(retriever=base_retriever, llm=llm)
+        compressor = LLMChainExtractor.from_llm(llm)
+        compression_retriever = ContextualCompressionRetriever(
+            base_compressor=compressor,
+            base_retriever=mq_retriever
         )
         
-        retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "当你需要回答关于用户上传的文档里的内容时，可以使用此工具搜索。")
+        retriever_tool = create_retriever_tool(compression_retriever, "document_search", "搜索用户上传的文档内容。")
         tools.append(retriever_tool)
-        st.success(f"✅ 文件 {uploaded_file.name} 已加载，并已开启多路并发检索！")
+        st.success("文档已加载并开启重排序！")
 
-system_prompt_text = """你是一个企业级全能 AI 助手，拥有多种工具：
-1. 遇到不知道的实时信息，必须使用 search_tool。
-2. 遇到关于长文档的文本内容问答，使用 document_search。
-3. 如果用户要求进行复杂计算、数据统计、或深度分析数据，你必须编写 Python 代码并使用 run_python_code 工具执行分析（记得用 print 输出你要查看的结果）。"""
+sys_prompt = """你是一个顶级无所不能的 AI。
+拥有搜索、爬网页、读图、数据库SQL查表、Python画图/计算 等终极能力。
+根据用户问题，自主选择合适的工具。
+注意：公司数据库叫 company_demo.db，表名 sales (id, product, revenue, region)。"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
-    system_prompt_text += f"\n\n[核心机密] 用户最新上传了本地文件，物理路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格分析，你可以直接在这个工具的 Python 代码里 import pandas 读取它进行统计！"
+    sys_prompt += f"\n本地文件物理路径: '{st.session_state.current_file_path}'。"
 
 prompt = ChatPromptTemplate.from_messages([
-    ("system", system_prompt_text),
+    ("system", sys_prompt),
     MessagesPlaceholder(variable_name="chat_history", optional=True),
     ("human", "{input}"),
     MessagesPlaceholder(variable_name="agent_scratchpad"),
@@ -219,7 +304,10 @@ prompt = ChatPromptTemplate.from_messages([
 agent = create_tool_calling_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
-st.title("🤖 满血版企业级 AI (高级 RAG + Agent)")
+# ==========================================
+# 5. 主界面与交互
+# ==========================================
+st.title("👑 神级全栈 AI 助手")
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
@@ -227,10 +315,9 @@ for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
 
-if user_input := st.chat_input("传个文档，故意用同义词考考我的高级检索能力！"):
+if user_input := st.chat_input("发链接让我爬、发图片让我看、让我查数据库、或让我画图！"):
     if len(st.session_state.messages) == 0:
-        new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
-        update_session_title(st.session_state.current_session_id, new_title)
+        update_session_title(st.session_state.current_session_id, user_input[:10])
 
     save_message(st.session_state.current_session_id, "user", user_input)
     with st.chat_message("user"):
@@ -243,6 +330,10 @@ if user_input := st.chat_input("传个文档，故意用同义词考考我的高
 
     with st.chat_message("assistant"):
         st_callback = StreamlitCallbackHandler(st.container())
+        # 运行前清理掉之前的旧图表
+        if os.path.exists('temp_chart.png'):
+            os.remove('temp_chart.png')
+            
         try:
             response = agent_executor.invoke(
                 {"input": user_input, "chat_history": chat_history},
@@ -250,7 +341,11 @@ if user_input := st.chat_input("传个文档，故意用同义词考考我的高
             )
             answer = response["output"]
             save_message(st.session_state.current_session_id, "assistant", answer)
-            st.rerun()
             
+            # 检查是否有 AI 刚刚画好的图
+            if os.path.exists('temp_chart.png'):
+                st.image('temp_chart.png')
+                
+            st.rerun()
         except Exception as e:
             st.error(f"发生错误: {e}")
