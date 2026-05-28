@@ -10,3 +10,4 @@ tavily-python
 pandas
 matplotlib
 plotly
+SQLAlchemy==2.0.25
