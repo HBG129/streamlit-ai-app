@@ -1,9 +1,11 @@
 streamlit
-langchain==0.2.16
-langchain-openai==0.1.23
-langchain-community==0.2.16
-langchain-text-splitters
+langchain
+langchain-openai
+langchain-community
+tavily-python
 faiss-cpu
 pypdf
-docx2txt
-tavily-python
+matplotlib
+beautifulsoup4
+requests
+SQLAlchemy
