@@ -33,11 +33,10 @@ if not os.path.exists("saved_charts"):
     os.makedirs("saved_charts")
 
 # ==========================================
-# 数据库管理区
+# 数据库管理区 (维持不变，两个库完美分离)
 # ==========================================
 
 def init_chat_db():
-    """初始化聊天记录数据库（部署在云端时，重启会清空，不影响业务）"""
     conn = sqlite3.connect('chat_history.db')
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, title TEXT, created_at DATETIME)''')
@@ -46,19 +45,11 @@ def init_chat_db():
     conn.close()
 
 def init_business_db():
-    """
-    初始化企业数据库。
-    【重点】如果你已经把 company_data.db 传到了 GitHub，这里只会读取，不会覆盖！
-    如果文件不存在，它会自动建一些假数据供你测试。
-    """
     conn = sqlite3.connect('company_data.db')
     c = conn.cursor()
-    # 创建员工表
     c.execute('''CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY, name TEXT, department TEXT, salary INTEGER, join_date DATE)''')
-    # 创建销量表
     c.execute('''CREATE TABLE IF NOT EXISTS product_sales (id INTEGER PRIMARY KEY, product_name TEXT, category TEXT, revenue INTEGER, units_sold INTEGER)''')
     
-    # 只有当表是空的时候，才插入测试数据（防止覆盖你 GitHub 上的真实数据）
     c.execute("SELECT COUNT(*) FROM employees")
     if c.fetchone()[0] == 0:
         c.executemany("INSERT INTO employees (name, department, salary, join_date) VALUES (?, ?, ?, ?)",
@@ -127,7 +118,6 @@ def delete_session(session_id):
     conn.commit()
     conn.close()
 
-# 初始化两个数据库
 init_chat_db()
 init_business_db() 
 
@@ -149,26 +139,31 @@ except KeyError as e:
     st.error(f"⚠️ 缺少 API Key: {e}。请检查 Secrets 配置！")
     st.stop()
 
-# 核心大脑：DeepSeek
+# 核心大脑：DeepSeek (保持0.1的低温度，让它写代码和SQL更严谨)
 llm = ChatOpenAI(
     model="deepseek-chat", 
     api_key=st.secrets["DEEPSEEK_API_KEY"], 
     base_url="https://api.deepseek.com", 
-    temperature=0.1,  # 保持0.1，让AI写SQL更严谨
+    temperature=0.1,  
     streaming=True
 )
 
 # ==========================================
-# 工具区 (Agent Tools)
+# 工具区 (防弹级拦截器)
 # ==========================================
 @tool
 def run_python_code(code: str) -> str:
     """
-    运行 Python 代码进行复杂的数据分析、统计计算或绘制动态图表。
+    当你需要处理CSV文件或者画任何图表时，必须调用此工具。
     输入必须是一段合法的 Python 脚本。
-    1. 画图必须使用 px (plotly.express)。
-    2. 画完后必须调用 `st.plotly_chart(fig)` 进行渲染。
     """
+    # 【核心防御】：如果 AI 敢用 matplotlib，直接报错，强迫它 Agent 自我纠错改用 Plotly！
+    if "matplotlib" in code or "pyplot" in code or "plt.show" in code:
+        return "【系统拒绝执行】绝对禁止使用 matplotlib 或 plt.show()！请立刻修改代码，使用 plotly.express (px) 画图，并调用 st.plotly_chart(fig) 进行渲染！"
+
+    if "st.plotly_chart" not in code:
+        return "【系统警告】你的代码中没有发现 `st.plotly_chart(fig)`，这样用户看不到图表！请务必加上它。"
+
     old_stdout = sys.stdout
     redirected_output = sys.stdout = io.StringIO()
     
@@ -194,15 +189,8 @@ def run_python_code(code: str) -> str:
         }
         exec(code, global_env)
         
-        if 'fig' in global_env and not st.session_state.temp_chart_paths:
-            fig = global_env['fig']
-            cid = str(uuid.uuid4())
-            cpath = f"saved_charts/{cid}.json"
-            pio.write_json(fig, cpath)
-            st.session_state.temp_chart_paths.append(cpath)
-
         sys.stdout = old_stdout
-        return redirected_output.getvalue() + "\n（代码执行成功，图表已生成）"
+        return redirected_output.getvalue() + "\n（代码执行成功，图表已完美生成并保存给用户）"
     except Exception as e:
         sys.stdout = old_stdout
         return f"代码执行出错: {str(e)}"
@@ -211,11 +199,9 @@ def run_python_code(code: str) -> str:
 def run_sql_query(sql: str) -> str:
     """
     用于查询公司企业数据库 (company_data.db)。
-    输入必须是合法的 SQLite SQL 查询语句。
-    执行后会返回查询结果。
+    输入必须是合法的 SQLite SQL 查询语句。执行后会返回查询结果。
     """
     try:
-        # 直接连接本地/GitHub传上来的那个库
         conn = sqlite3.connect('company_data.db')
         c = conn.cursor()
         c.execute(sql)
@@ -280,7 +266,7 @@ tools = [
     run_sql_query
 ]
 
-# RAG 文档处理
+# RAG 及文件处理
 if uploaded_file is not None:
     with tempfile.NamedTemporaryFile(delete=False, suffix=f".{uploaded_file.name.split('.')[-1]}") as tmp_file:
         tmp_file.write(uploaded_file.getvalue())
@@ -288,7 +274,7 @@ if uploaded_file is not None:
         st.session_state.current_file_path = tmp_path
 
     if uploaded_file.name.endswith(".csv"):
-        st.success(f"✅ 数据表 {uploaded_file.name} 已加载！")
+        st.success(f"✅ 数据表 {uploaded_file.name} 已加载，AI 可以直接读取作图了！")
     else:
         with st.spinner("正在启动高级 RAG 引擎解析文件..."):
             if uploaded_file.name.endswith(".pdf"):
@@ -310,19 +296,24 @@ if uploaded_file is not None:
             tools.append(retriever_tool)
             st.success(f"✅ 文件 {uploaded_file.name} 已加载！")
 
-# 告诉 AI 数据库的结构
-system_prompt_text = """你是一个企业级全能 AI 助手。
-当用户需要画图时，调用 run_python_code 生成图表，无需废话。
+# 【超级提示词】：彻底把数据库逻辑和画图逻辑分开，杜绝 AI 产生幻觉
+system_prompt_text = """你是一个顶级的数据分析师与全能 AI 助手。你拥有强大的 Python 代码执行能力！
 
-【数据库说明】
-你可以使用 run_sql_query 工具查询公司的 SQLite 数据库 (company_data.db)。库中包含两张表：
+【核心技能 1：分析文件与画图】（极其重要！！！）
+1. 绝不允许对用户说“我无法生成图片”或“请截图下载”。你有能力画图！
+2. 只要用户要求画图（或处理CSV文件），你**必须**调用 `run_python_code` 工具写代码。
+3. 【红线规则】：**绝对禁止**使用 matplotlib 或 plt.show()。**只能使用 plotly.express (px) 画图**。
+4. 必须将生成的图表对象命名为 `fig`，并且代码最后一行必须是 `st.plotly_chart(fig)`。
+
+【核心技能 2：查询企业数据库】
+你可以使用 `run_sql_query` 查询公司数据库 (company_data.db)。
 1. employees 表：id, name(姓名), department(部门), salary(薪资), join_date(入职日期)
 2. product_sales 表：id, product_name(产品名), category(类别), revenue(营收), units_sold(销量)
 
-如果用户想看数据图表，你可以先用 run_sql_query 查出数据，然后再把查到的数据放进 run_python_code 里画图！"""
+💡 工作流提示：如果用户让你把数据库里的数据画成图，请先用 `run_sql_query` 查出具体数据，然后将查到的数据直接写入 Python 代码中转换成 DataFrame，最后用 plotly 画图！"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
-    system_prompt_text += f"\n\n[机密] 最新本地文件路径: '{st.session_state.current_file_path}'。如果是表格直接 read_csv 读取。"
+    system_prompt_text += f"\n\n[机密指令] 用户刚刚上传了文件，文件绝对路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格，请直接用 pandas.read_csv 读取该路径并画图！"
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt_text),
@@ -335,13 +326,12 @@ agent = create_tool_calling_agent(llm, tools, prompt)
 agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 
 # ==========================================
-# 主界面对话区
+# 主界面对话与图表渲染区
 # ==========================================
-st.title("🤖 满血版企业级 AI (直接读取 GitHub 数据库)")
+st.title("🤖 满血版企业级 AI (彻底修复幻觉不掉线版)")
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
-# 历史消息与图表渲染
 for msg in st.session_state.messages:
     with st.chat_message(msg["role"]):
         content = msg["content"]
@@ -362,8 +352,7 @@ for msg in st.session_state.messages:
         else:
             st.markdown(content)
 
-# 用户输入处理
-if user_input := st.chat_input("问我关于公司员工薪资或产品销量的问题吧！也可以让我画图！"):
+if user_input := st.chat_input("上传CSV让我画图，或者直接问我公司数据库的情况！"):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
@@ -388,7 +377,7 @@ if user_input := st.chat_input("问我关于公司员工薪资或产品销量的
             )
             answer = response["output"]
             
-            # 隐藏记录图表路径
+            # 隐藏记录图表路径，实现持久化
             if "temp_chart_paths" in st.session_state and st.session_state.temp_chart_paths:
                 for p in st.session_state.temp_chart_paths:
                     answer += f"\n[CHART_PATH:{p}]"
