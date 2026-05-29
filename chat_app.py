@@ -46,31 +46,33 @@ st.markdown("""
     /* 隐藏底部水印 */
     footer {visibility: hidden;}
     
-    /* 彻底隐藏 Streamlit 原生的顶部菜单栏，给我们的标题让出位置 */
-    header[data-testid="stHeader"] {
+    /* 【核心修复】只隐藏右上角的工具菜单(Deploy等)，保留整个透明顶栏和左上角的展开侧边栏按钮！ */
+    [data-testid="stToolbar"] {
         display: none !important;
     }
+    header[data-testid="stHeader"] {
+        background: transparent !important; 
+    }
     
-    /* 清除主容器的默认顶部留白 */
+    /* 顶部留出空间，防止内容盖住左上角的侧边栏展开箭头 */
     .block-container {
-        padding-top: 0 !important;
+        padding-top: 2rem !important;
     }
     
     /* ==========================================
-       【核心修复】粘性吸顶标题 (不遮挡侧边栏！)
+       悬浮吸顶标题 (类似动态岛，避开顶栏展开按钮)
        ========================================== */
     .custom-sticky-header {
         position: sticky;
-        top: 0;
+        top: 2.875rem; /* 刚好停靠在原生透明顶栏下方 */
         z-index: 999;
-        background-color: #e5e8f0; /* 亮色模式：独立于纯白背景的区分色 */
+        background-color: #e5e8f0; /* 亮色模式独立配色 */
         padding: 16px;
         margin-bottom: 25px;
         text-align: center;
-        border-radius: 0 0 16px 16px; /* 底部圆角 */
-        box-shadow: 0 6px 15px rgba(0,0,0,0.06); /* 悬浮阴影层次感 */
+        border-radius: 16px; /* 全圆角悬浮卡片感 */
+        box-shadow: 0 6px 15px rgba(0,0,0,0.08); /* 悬浮阴影 */
         border: 1px solid #d0d3dc;
-        border-top: none;
     }
     
     .custom-sticky-header h3 {
@@ -85,7 +87,6 @@ st.markdown("""
         .custom-sticky-header {
             background-color: #1a1c24; 
             border: 1px solid #2e303e;
-            border-top: none;
             box-shadow: 0 6px 15px rgba(0,0,0,0.3);
         }
         .custom-sticky-header h3 {
@@ -421,7 +422,7 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # 主界面对话与图表渲染区
 # ==========================================
 
-# 1. 渲染【不挡侧边栏】的独立色彩粘性标题
+# 1. 渲染【不挡侧边栏】的全圆角粘性悬浮标题
 current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
 st.markdown(f"""
 <div class="custom-sticky-header">
