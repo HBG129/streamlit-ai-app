@@ -46,49 +46,44 @@ st.markdown("""
     /* 隐藏底部水印 */
     footer {visibility: hidden;}
     
-    /* 【精准修复】只隐藏右上角的 Deploy 和 Menu 按钮，坚决不碰左上角的侧边栏展开按钮！ */
-    .stAppDeployButton, #MainMenu, [data-testid="stToolbar"] {
+    /* 【精准清理】只隐藏右上角的 Deploy 等无关按钮，保留原生头部容器 */
+    .stDeployButton {
         display: none !important;
     }
     
-    /* 确保主内容区正常留白 */
+    /* 为主聊天区域腾出顶部空间，防止消息滑入悬浮岛下方时被遮挡过多 */
     .block-container {
-        padding-top: 3rem !important;
+        padding-top: 5rem !important;
     }
     
     /* ==========================================
-       悬浮吸顶标题 (避开原生顶栏，永不遮挡展开按钮)
+       【终极修复】真正的全局固定悬浮标题 (动态岛)
        ========================================== */
-    .custom-sticky-header {
-        position: sticky;
-        top: 3.5rem; /* 停靠在展开按钮的下方，保证互不干扰 */
-        z-index: 999;
-        background-color: #e5e8f0; /* 亮色模式独立配色 */
-        padding: 16px;
-        margin-bottom: 25px;
+    .custom-fixed-header {
+        position: fixed;          /* 核心：绝对固定定位，随你怎么滚，它都在原位 */
+        top: 20px;                /* 距离屏幕顶端的距离 */
+        left: 50%;                /* 核心：锁定在屏幕水平正中央 */
+        transform: translateX(-50%); 
+        z-index: 900;             /* 核心：层级低于侧边栏(通常100万级)，高于聊天内容。绝不遮挡侧边栏按钮！ */
+        background-color: var(--secondary-background-color); /* 自动适配 Streamlit 的深浅色模式 */
+        color: var(--text-color); /* 自动适配深浅色字体 */
+        padding: 12px 35px;
+        border-radius: 30px;      /* 极致圆润的“动态岛”外观 */
+        border: 1px solid var(--border-color);
+        box-shadow: 0 8px 24px rgba(0,0,0,0.15); /* 强烈悬浮感 */
+        width: max-content;       /* 核心：宽度只包裹文字！绝不会向左蔓延遮挡任何按钮 */
+        max-width: 60%;
         text-align: center;
-        border-radius: 16px; /* 全圆角悬浮卡片感 */
-        box-shadow: 0 6px 15px rgba(0,0,0,0.08); /* 悬浮阴影 */
-        border: 1px solid #d0d3dc;
+        display: flex;
+        align-items: center;
+        justify-content: center;
     }
     
-    .custom-sticky-header h3 {
+    .custom-fixed-header h3 {
         margin: 0;
-        color: #2c2e36;
-        font-size: 1.25rem;
+        font-size: 1.15rem;
         font-weight: 600;
-    }
-    
-    /* 适配暗黑模式的标题栏颜色 */
-    @media (prefers-color-scheme: dark) {
-        .custom-sticky-header {
-            background-color: #1a1c24; 
-            border: 1px solid #2e303e;
-            box-shadow: 0 6px 15px rgba(0,0,0,0.3);
-        }
-        .custom-sticky-header h3 {
-            color: #fafafa;
-        }
+        line-height: 1.2;
     }
 
     /* 工具栏按钮悬浮动效 */
@@ -419,17 +414,17 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # 主界面对话与图表渲染区
 # ==========================================
 
-# 1. 渲染【不挡侧边栏按钮】的全圆角粘性悬浮标题
+# 1. 渲染【绝对悬浮且不遮挡按钮】的动态岛标题
 current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
 st.markdown(f"""
-<div class="custom-sticky-header">
+<div class="custom-fixed-header">
     <h3>💬 {current_title}</h3>
 </div>
 """, unsafe_allow_html=True)
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
-# 2. 纯净版用户气泡：去掉了蓝色，【单人头修复(👤)】，文字整齐左对齐
+# 2. 纯净版用户气泡：单人头，文字整齐左对齐
 def render_user_message(content):
     safe_content = content.replace('\n', '<br>')
     html = f"""
