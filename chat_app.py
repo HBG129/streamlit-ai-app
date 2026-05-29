@@ -36,6 +36,40 @@ def init_db():
     conn = get_conn()
     cur = conn.cursor()
 
+    # 检查 sessions 表是否存在
+    cur.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='sessions'
+    """)
+    sessions_exists = cur.fetchone() is not None
+
+    # 检查 messages 表是否存在
+    cur.execute("""
+        SELECT name FROM sqlite_master
+        WHERE type='table' AND name='messages'
+    """)
+    messages_exists = cur.fetchone() is not None
+
+    # 如果旧表结构不兼容，直接重建
+    if sessions_exists:
+        cur.execute("PRAGMA table_info(sessions)")
+        session_columns = [row[1] for row in cur.fetchall()]
+
+        required_session_columns = {"id", "title", "created_at", "updated_at"}
+
+        if not required_session_columns.issubset(set(session_columns)):
+            cur.execute("DROP TABLE IF EXISTS messages")
+            cur.execute("DROP TABLE IF EXISTS sessions")
+
+    if messages_exists:
+        cur.execute("PRAGMA table_info(messages)")
+        message_columns = [row[1] for row in cur.fetchall()]
+
+        required_message_columns = {"id", "session_id", "role", "content", "created_at"}
+
+        if not required_message_columns.issubset(set(message_columns)):
+            cur.execute("DROP TABLE IF EXISTS messages")
+
     cur.execute("""
         CREATE TABLE IF NOT EXISTS sessions (
             id TEXT PRIMARY KEY,
@@ -90,12 +124,16 @@ def get_all_sessions():
 
 
 def get_session_title(session_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT title FROM sessions WHERE id = ?", (session_id,))
-    row = cur.fetchone()
-    conn.close()
-    return row[0] if row else "新对话"
+    try:
+        conn = get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT title FROM sessions WHERE id = ?", (session_id,))
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else "新对话"
+    except sqlite3.OperationalError:
+        init_db()
+        return "新对话"
 
 
 def update_session_title(session_id, title):
