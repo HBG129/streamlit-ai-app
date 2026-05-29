@@ -46,44 +46,35 @@ st.markdown("""
     /* 隐藏底部水印 */
     footer {visibility: hidden;}
     
-    /* 【精准清理】只隐藏右上角的 Deploy 等无关按钮，保留原生头部容器 */
-    .stDeployButton {
-        display: none !important;
-    }
-    
-    /* 为主聊天区域腾出顶部空间，防止消息滑入悬浮岛下方时被遮挡过多 */
-    .block-container {
-        padding-top: 5rem !important;
-    }
+    /* 隐藏右上角不必要的 Deploy 按钮 */
+    .stDeployButton {display: none !important;}
     
     /* ==========================================
-       【终极修复】真正的全局固定悬浮标题 (动态岛)
+       【终极修复】横跨全屏的整块黑底白字固定标题栏
        ========================================== */
     .custom-fixed-header {
-        position: fixed;          /* 核心：绝对固定定位，随你怎么滚，它都在原位 */
-        top: 20px;                /* 距离屏幕顶端的距离 */
-        left: 50%;                /* 核心：锁定在屏幕水平正中央 */
-        transform: translateX(-50%); 
-        z-index: 900;             /* 核心：层级低于侧边栏(通常100万级)，高于聊天内容。绝不遮挡侧边栏按钮！ */
-        background-color: var(--secondary-background-color); /* 自动适配 Streamlit 的深浅色模式 */
-        color: var(--text-color); /* 自动适配深浅色字体 */
-        padding: 12px 35px;
-        border-radius: 30px;      /* 极致圆润的“动态岛”外观 */
-        border: 1px solid var(--border-color);
-        box-shadow: 0 8px 24px rgba(0,0,0,0.15); /* 强烈悬浮感 */
-        width: max-content;       /* 核心：宽度只包裹文字！绝不会向左蔓延遮挡任何按钮 */
-        max-width: 60%;
+        position: fixed;       /* 绝对固定定位，随你怎么滚都不会动 */
+        top: 3.5rem;           /* 核心：刚好放在原生顶栏下方，100%不会遮挡左上角的展开按钮 */
+        left: 0;               /* 紧贴左边 */
+        right: 0;              /* 紧贴右边，形成整块背景 */
+        background-color: #1a1c24; /* 你要的整块黑色背景 */
+        z-index: 990;          /* 保证悬浮在聊天之上，但低于弹出的侧边栏 */
+        padding: 16px 0;
         text-align: center;
-        display: flex;
-        align-items: center;
-        justify-content: center;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.2); /* 悬浮阴影 */
     }
     
     .custom-fixed-header h3 {
         margin: 0;
-        font-size: 1.15rem;
+        color: #ffffff !important; /* 你要的白色居中标题 */
+        font-size: 1.25rem;
         font-weight: 600;
         line-height: 1.2;
+    }
+
+    /* 为主聊天区域腾出顶部空间，防止滑动到最上面时文字钻进黑条下面看不见 */
+    .block-container {
+        padding-top: 8rem !important;
     }
 
     /* 工具栏按钮悬浮动效 */
@@ -104,7 +95,7 @@ logging.basicConfig()
 logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
 
 # ==========================================
-# 数据库与会话管理 (应用绝对路径)
+# 数据库与会话管理
 # ==========================================
 def init_chat_db():
     conn = sqlite3.connect(DB_PATH)
@@ -348,7 +339,7 @@ with st.sidebar:
         st.info(f"📁 **{st.session_state.current_file_name}**")
 
 # ==========================================
-# 初始化 Agent (带有实时日期注入)
+# 初始化 Agent 
 # ==========================================
 tools = [
     TavilySearchResults(max_results=3, description="用于搜索互联网上的实时信息。"),
@@ -380,7 +371,6 @@ if "current_file_path" in st.session_state and st.session_state.current_file_pat
             retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "用于搜索用户文档的内容。")
             tools.append(retriever_tool)
 
-# 实时时间注入
 current_time_str = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
 
 system_prompt_text = f"""你是一个顶级的数据分析师与全能 AI 助手。
@@ -414,7 +404,7 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # 主界面对话与图表渲染区
 # ==========================================
 
-# 1. 渲染【绝对悬浮且不遮挡按钮】的动态岛标题
+# 1. 渲染横跨全屏的固定黑色顶栏
 current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
 st.markdown(f"""
 <div class="custom-fixed-header">
@@ -455,7 +445,7 @@ for msg in st.session_state.messages:
                     try:
                         fig = pio.read_json(cpath)
                         st.plotly_chart(fig, use_container_width=True)
-                    except Exception as e:
+                    except Exception:
                         pass
 
 # 4. 输入与生成逻辑
