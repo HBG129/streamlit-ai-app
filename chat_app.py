@@ -26,6 +26,17 @@ from langchain_community.callbacks.streamlit import StreamlitCallbackHandler
 from langchain.retrievers.multi_query import MultiQueryRetriever
 
 # ==========================================
+# 绝对路径锁定 (确保重启电脑后数据永不丢失！)
+# ==========================================
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DB_PATH = os.path.join(BASE_DIR, 'chat_history.db')
+COMPANY_DB_PATH = os.path.join(BASE_DIR, 'company_data.db')
+CHART_DIR = os.path.join(BASE_DIR, 'saved_charts')
+
+if not os.path.exists(CHART_DIR):
+    os.makedirs(CHART_DIR)
+
+# ==========================================
 # 页面基础设置与 UI 美化 (极简 CSS)
 # ==========================================
 st.set_page_config(page_title="极简 AI", page_icon="🤖", layout="wide")
@@ -35,48 +46,51 @@ st.markdown("""
     /* 隐藏底部水印 */
     footer {visibility: hidden;}
     
-    /* 彻底隐藏 Streamlit 原生的顶部菜单栏 (Deploy等)，为我们的固定标题让路 */
+    /* 彻底隐藏 Streamlit 原生的顶部菜单栏，给我们的标题让出位置 */
     header[data-testid="stHeader"] {
         display: none !important;
     }
     
-    /* ==========================================
-       【核心修复 1】绝对固定的吸顶标题栏 + 独立颜色区分
-       ========================================== */
-    .custom-fixed-header {
-        position: fixed;
-        top: 0;
-        left: 0;
-        width: 100%;
-        background-color: #f0f2f6; /* 亮色模式下的独立背景色，区分聊天区 */
-        z-index: 999999;
-        text-align: center;
-        padding: 16px 0;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.08); /* 明显的阴影层次感 */
-        border-bottom: 1px solid #e0e0e0;
+    /* 清除主容器的默认顶部留白 */
+    .block-container {
+        padding-top: 0 !important;
     }
     
-    .custom-fixed-header h3 {
+    /* ==========================================
+       【核心修复】粘性吸顶标题 (不遮挡侧边栏！)
+       ========================================== */
+    .custom-sticky-header {
+        position: sticky;
+        top: 0;
+        z-index: 999;
+        background-color: #e5e8f0; /* 亮色模式：独立于纯白背景的区分色 */
+        padding: 16px;
+        margin-bottom: 25px;
+        text-align: center;
+        border-radius: 0 0 16px 16px; /* 底部圆角 */
+        box-shadow: 0 6px 15px rgba(0,0,0,0.06); /* 悬浮阴影层次感 */
+        border: 1px solid #d0d3dc;
+        border-top: none;
+    }
+    
+    .custom-sticky-header h3 {
         margin: 0;
-        color: #31333F;
+        color: #2c2e36;
         font-size: 1.25rem;
         font-weight: 600;
     }
     
     /* 适配暗黑模式的标题栏颜色 */
     @media (prefers-color-scheme: dark) {
-        .custom-fixed-header {
+        .custom-sticky-header {
             background-color: #1a1c24; 
-            border-bottom: 1px solid #2e303e;
+            border: 1px solid #2e303e;
+            border-top: none;
+            box-shadow: 0 6px 15px rgba(0,0,0,0.3);
         }
-        .custom-fixed-header h3 {
+        .custom-sticky-header h3 {
             color: #fafafa;
         }
-    }
-    
-    /* 强行把聊天内容往下推，防止被固定标题挡住 */
-    .block-container {
-        padding-top: 6rem !important;
     }
 
     /* 工具栏按钮悬浮动效 */
@@ -96,14 +110,11 @@ st.markdown("""
 logging.basicConfig()
 logging.getLogger("langchain.retrievers.multi_query").setLevel(logging.INFO)
 
-if not os.path.exists("saved_charts"):
-    os.makedirs("saved_charts")
-
 # ==========================================
-# 数据库与会话管理
+# 数据库与会话管理 (应用绝对路径)
 # ==========================================
 def init_chat_db():
-    conn = sqlite3.connect('chat_history.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS sessions (session_id TEXT PRIMARY KEY, title TEXT, created_at DATETIME)''')
     c.execute('''CREATE TABLE IF NOT EXISTS messages (id INTEGER PRIMARY KEY AUTOINCREMENT, session_id TEXT, role TEXT, content TEXT, created_at DATETIME)''')
@@ -111,7 +122,7 @@ def init_chat_db():
     conn.close()
 
 def init_business_db():
-    conn = sqlite3.connect('company_data.db')
+    conn = sqlite3.connect(COMPANY_DB_PATH)
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS employees (id INTEGER PRIMARY KEY, name TEXT, department TEXT, salary INTEGER, join_date DATE)''')
     c.execute('''CREATE TABLE IF NOT EXISTS product_sales (id INTEGER PRIMARY KEY, product_name TEXT, category TEXT, revenue INTEGER, units_sold INTEGER)''')
@@ -131,7 +142,7 @@ def init_business_db():
 
 def create_new_session(title="新对话"):
     session_id = str(uuid.uuid4())
-    conn = sqlite3.connect('chat_history.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("INSERT INTO sessions (session_id, title, created_at) VALUES (?, ?, ?)", (session_id, title, datetime.now()))
     conn.commit()
@@ -139,7 +150,7 @@ def create_new_session(title="新对话"):
     return session_id
 
 def get_all_sessions():
-    conn = sqlite3.connect('chat_history.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT session_id, title FROM sessions ORDER BY created_at DESC")
     rows = c.fetchall()
@@ -147,14 +158,14 @@ def get_all_sessions():
     return rows
 
 def save_message(session_id, role, content):
-    conn = sqlite3.connect('chat_history.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("INSERT INTO messages (session_id, role, content, created_at) VALUES (?, ?, ?, ?)", (session_id, role, content, datetime.now()))
     conn.commit()
     conn.close()
 
 def get_messages(session_id):
-    conn = sqlite3.connect('chat_history.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT role, content FROM messages WHERE session_id = ? ORDER BY id ASC", (session_id,))
     rows = [{"role": row[0], "content": row[1]} for row in c.fetchall()]
@@ -162,21 +173,21 @@ def get_messages(session_id):
     return rows
 
 def update_session_title(session_id, new_title):
-    conn = sqlite3.connect('chat_history.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("UPDATE sessions SET title = ? WHERE session_id = ?", (new_title, session_id))
     conn.commit()
     conn.close()
 
 def clear_session_messages(session_id):
-    conn = sqlite3.connect('chat_history.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
     conn.commit()
     conn.close()
 
 def delete_session(session_id):
-    conn = sqlite3.connect('chat_history.db')
+    conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
     c.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
@@ -226,7 +237,7 @@ def run_python_code(code: str) -> str:
         st.session_state.temp_chart_paths = []
     def auto_save_and_render(f):
         cid = str(uuid.uuid4())
-        cpath = f"saved_charts/{cid}.json"
+        cpath = os.path.join(CHART_DIR, f"{cid}.json")
         pio.write_json(f, cpath)
         st.session_state.temp_chart_paths.append(cpath)
         st.plotly_chart(f, use_container_width=True)
@@ -255,7 +266,7 @@ def run_python_code(code: str) -> str:
 def run_sql_query(sql: str) -> str:
     """查询公司企业数据库"""
     try:
-        conn = sqlite3.connect('company_data.db')
+        conn = sqlite3.connect(COMPANY_DB_PATH)
         c = conn.cursor()
         c.execute(sql)
         rows = c.fetchall()
@@ -376,7 +387,7 @@ if "current_file_path" in st.session_state and st.session_state.current_file_pat
             retriever_tool = create_retriever_tool(advanced_retriever, "document_search", "用于搜索用户文档的内容。")
             tools.append(retriever_tool)
 
-# 获取系统当天的真实时间注入给 AI
+# 实时时间注入
 current_time_str = datetime.now().strftime("%Y-%m-%d %A %H:%M:%S")
 
 system_prompt_text = f"""你是一个顶级的数据分析师与全能 AI 助手。
@@ -389,16 +400,12 @@ system_prompt_text = f"""你是一个顶级的数据分析师与全能 AI 助手
 1. 绝不允许对用户说“我无法生成图片”。你有能力画图！
 2. 只要用户要求画图（或处理CSV文件），你**必须**调用 `run_python_code` 工具写代码。
 3. 【红线规则】：禁止使用 matplotlib。只能使用 plotly.express (px) 画图！
-4. 你只需要将生成的图表赋值给变量 `fig`，系统会自动帮你渲染并展示给用户，无需调用 .show()！
 
 【核心技能 2：查询企业数据库】
-你可以使用 `run_sql_query` 查询公司数据库 (company_data.db)。
-
-【核心技能 3：深度网络爬虫】
-如果用户给你一个具体的 URL 链接，或者你需要深入了解某个搜索结果的详细内容，请立刻调用 `fetch_web_content` 工具去抓取全文！"""
+你可以使用 `run_sql_query` 查询公司数据库 (company_data.db)。"""
 
 if "current_file_path" in st.session_state and st.session_state.current_file_path:
-    system_prompt_text += f"\n\n[机密指令] 用户刚刚上传了文件，文件绝对路径为: '{st.session_state.current_file_path}'。如果是 CSV 表格，请直接用 pandas.read_csv 读取该路径并画图！"
+    system_prompt_text += f"\n\n[机密指令] 用户刚刚上传了文件，路径为: '{st.session_state.current_file_path}'。如果是 CSV 请用 pandas 读取该路径！"
 
 prompt = ChatPromptTemplate.from_messages([
     ("system", system_prompt_text),
@@ -414,22 +421,22 @@ agent_executor = AgentExecutor(agent=agent, tools=tools, verbose=True)
 # 主界面对话与图表渲染区
 # ==========================================
 
-# 1. 渲染绝对固定的吸顶标题栏 (使用 HTML 独立容器)
+# 1. 渲染【不挡侧边栏】的独立色彩粘性标题
 current_title = next((t for s, t in get_all_sessions() if s == st.session_state.current_session_id), "新对话")
 st.markdown(f"""
-<div class="custom-fixed-header">
+<div class="custom-sticky-header">
     <h3>💬 {current_title}</h3>
 </div>
 """, unsafe_allow_html=True)
 
 st.session_state.messages = get_messages(st.session_state.current_session_id)
 
-# 定义一个纯 HTML 生成器，用于完美渲染右侧用户发言（单人头、无蓝色、左对齐文字）
+# 2. 纯净版用户气泡：去掉了蓝色，单人头，文字整齐左对齐
 def render_user_message(content):
     safe_content = content.replace('\n', '<br>')
     html = f"""
     <div style="display: flex; justify-content: flex-end; align-items: flex-start; margin-bottom: 25px; width: 100%;">
-        <div style="background-color: var(--secondary-background-color); color: var(--text-color); padding: 12px 18px; border-radius: 12px 4px 12px 12px; max-width: 75%; font-size: 16px; line-height: 1.6; word-wrap: break-word; text-align: left; box-shadow: 0 1px 2px rgba(0,0,0,0.05);">
+        <div style="background-color: var(--secondary-background-color); color: var(--text-color); padding: 12px 18px; border-radius: 12px 4px 12px 12px; max-width: 75%; font-size: 16px; line-height: 1.6; word-wrap: break-word; text-align: left; border: 1px solid var(--secondary-background-color);">
             {safe_content}
         </div>
         <div style="margin-left: 12px; font-size: 26px; line-height: 1; padding-top: 5px;">
@@ -439,14 +446,12 @@ def render_user_message(content):
     """
     st.markdown(html, unsafe_allow_html=True)
 
-# 2. 渲染历史消息
+# 3. 渲染历史消息
 for msg in st.session_state.messages:
     content = msg["content"]
     if msg["role"] == "user":
-        # 用户发言完全脱离 Streamlit 原生组件，使用手写纯净 HTML 布局
         render_user_message(content)
     elif msg["role"] == "assistant":
-        # AI 保持原生组件在左侧渲染，以支持复杂的组件和图表
         with st.chat_message("assistant", avatar="🤖"):
             chart_paths = re.findall(r'\[CHART_PATH:(.*?)\]', content)
             clean_content = re.sub(r'\[CHART_PATH:.*?\]', '', content).strip()
@@ -458,17 +463,15 @@ for msg in st.session_state.messages:
                         fig = pio.read_json(cpath)
                         st.plotly_chart(fig, use_container_width=True)
                     except Exception as e:
-                        st.error(f"图表加载失败: {e}")
+                        pass
 
-# 3. 输入与生成逻辑
+# 4. 输入与生成逻辑
 if user_input := st.chat_input("输入问题，或点击左侧工具栏..."):
     if len(st.session_state.messages) == 0:
         new_title = user_input[:10] + "..." if len(user_input) > 10 else user_input
         update_session_title(st.session_state.current_session_id, new_title)
 
     save_message(st.session_state.current_session_id, "user", user_input)
-    
-    # 即刻渲染用户最新发言
     render_user_message(user_input)
 
     chat_history = [
@@ -476,7 +479,6 @@ if user_input := st.chat_input("输入问题，或点击左侧工具栏..."):
         for msg in st.session_state.messages
     ]
 
-    # AI 生成回复展示区
     with st.chat_message("assistant", avatar="🤖"):
         st_callback = StreamlitCallbackHandler(st.container())
         st.session_state.temp_chart_paths = []
